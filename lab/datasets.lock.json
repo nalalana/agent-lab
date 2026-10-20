@@ -9,6 +9,15 @@
       "license_file": "LICENSE",
       "license_observed": "MIT",
       "status": "downloaded_not_integrated"
+    },
+    {
+      "name": "RAGTruth",
+      "repository": "https://github.com/ParticleMedia/RAGTruth.git",
+      "revision": "c103204b9ce28d6bbad859304bf30de72b8ed8fe",
+      "path": "lab/datasets/RAGTruth",
+      "license_file": "LICENSE",
+      "license_observed": "MIT",
+      "status": "adapted_response_level_verifier_evaluation"
     }
   ]
 }
