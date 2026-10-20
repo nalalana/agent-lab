@@ -38,7 +38,7 @@ class GraphAgent(HalfDuplexAgent[dict]):
         if not line:
             raise AgentError("Graph worker terminated without response")
         reply = json.loads(line)
-        if reply["kind"] == "error":
+        if reply["kind"] == "error" and reply.get("status") != "FAILED":
             raise AgentError("Graph worker error: " + json.dumps(reply))
         return reply
 
@@ -61,11 +61,17 @@ class GraphAgent(HalfDuplexAgent[dict]):
             tool = messages[0]
             reply = self.exchange({"kind": "tool", "id": tool.id, "content": tool.content,
                 "error": tool.error, "execution_status": tool.execution_status})
-        if reply["kind"] == "tool":
+        if reply["kind"] == "error":
+            answer = AssistantMessage.text("The agent runtime stopped because this turn could not be verified or completed.",
+                raw_data={"graph_runtime_failure": reply})
+        elif reply["kind"] == "tool":
             answer = AssistantMessage.text("", tool_calls=[ToolCall(id=reply["id"], name=reply["name"], arguments=reply["arguments"])])
         else:
             answer = AssistantMessage.text(reply["content"])
         return answer, state
+
+    def is_stop(self, message):
+        return bool((message.raw_data or {}).get("graph_runtime_failure"))
 
     def stop(self, message=None, state=None):
         process = getattr(self, "process", None)

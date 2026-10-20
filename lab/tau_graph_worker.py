@@ -144,7 +144,10 @@ class Engine:
             reply = {"kind": "answer", "content": state.get("output_content", "")}
         else:
             self.active = False
-            reply = {"kind": "error", "status": state.get("status"), "events": [asdict(e) for e in state.get("events", [])[-2:]]}
+            error = state.get("error")
+            reply = {"kind": "error", "status": state.get("status"),
+                "error": asdict(error) if error else None,
+                "events": [asdict(e) for e in state.get("events", [])[-2:]]}
         if self.trace_path:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             record = {"reply": reply, "model_calls": self.traced.calls[self.trace_offset:], "usage": state.get("usage", {})}

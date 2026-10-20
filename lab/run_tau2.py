@@ -102,6 +102,8 @@ def main():
                 record.update({"simulation": result.model_dump(mode="json"),
                     "reward": result.reward_info.reward if result.reward_info else None,
                     "termination_reason": str(result.termination_reason)})
+                record["graph_runtime_failed"] = any(bool((getattr(m, "raw_data", None) or {}).get("graph_runtime_failure"))
+                                                     for m in result.messages)
             except Exception as exc:
                 record.update({"reward": None, "error_type": type(exc).__name__, "error_reason": str(exc)[:400]})
             record["seconds"] = time.perf_counter() - start
@@ -114,6 +116,9 @@ def main():
     summary = {"selected": len(records), "scored": len(scored), "errors": len(records) - len(scored),
         "reward_one": sum(r["reward"] == 1 for r in scored),
         "mean_reward": sum(r["reward"] for r in scored) / len(scored) if scored else None,
+        "graph_runtime_failures": sum(bool(r.get("graph_runtime_failed")) for r in records),
+        "reliable_reward_one": sum(r["reward"] == 1 and not r.get("graph_runtime_failed") for r in records),
+        "mean_reward_errors_zero": sum(r["reward"] or 0 for r in records) / len(records),
         "kind": plan["kind"], "not_production_graph_score": args.agent == "native"}
     (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Report: {output}")
