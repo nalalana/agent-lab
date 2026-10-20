@@ -17,7 +17,6 @@ from apps.company.models import (
     TransparentCompanyPromptVersion,
 )
 from apps.agent_runtime.tools.registry import default_tool_registry
-from apps.agent_runtime.tools.project_tables import agent_project_table_scopes
 
 from .types import ResolvedAgentConfig, ResolvedSkill
 
@@ -153,6 +152,9 @@ class ConfigResolver:
         transparent_company: TransparentCompany,
         agent: TransparentCompanyAgentDefinition,
     ) -> Dict[str, Any]:
+        # Prompt-only evaluation must not import business DB clients/properties.
+        from apps.agent_runtime.tools.project_tables import agent_project_table_scopes
+
         project_tables = agent_project_table_scopes(transparent_company.company, agent)
         binding = (
             TransparentCompanyAgentPermissionBinding.objects.filter(

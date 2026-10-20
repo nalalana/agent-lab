@@ -19,6 +19,47 @@ python lab/run_baseline.py --suite apps.agent_runtime.tests.test_response_verifi
 结果写入 `lab/results/baseline.json`，包括源码版本、工作区状态、逐条用时、失败详情。
 这属于脚本化模型的程序回归，**不能作为真实模型的幻觉率或公开基准成绩**。
 
+## 真实模型业务评测
+
+`run_eval.py` 使用生产 `Phase2AgentRuntimeFacade`、模型网关、请求分类器、响应核验器、工具注册与参数校验。
+工具执行器是独立 SQLite 合成环境，不访问公司实际数据库；每次 trial 都重置。
+30 条案例在 `cases/business.jsonl`，涵盖事实、缺少证据、空结果、故障、权限、写入、历史冲突、文档指令注入与澄清。
+这些是开发案例，不是真实失败记录，不是冻结保留集，也不是 tau2 官方基准。
+
+在 `lab/.env.local` 配置（文件已被 Git 忽略）：
+
+```dotenv
+AGENT_LAB_BASE_URL=https://your-compatible-endpoint/v1
+AGENT_LAB_MODEL=your-model-id
+AGENT_LAB_API_KEY=your-local-key
+# 仅当明确使用 HTTP 服务时设置：
+# AGENT_LAB_ALLOW_HTTP=1
+```
+
+```powershell
+python lab/test_eval.py
+python lab/run_eval.py --dry-run
+python lab/run_eval.py --case fact-01
+python lab/run_eval.py --concurrency 2 --repeat 1
+```
+
+环境变量优先于本地配置文件。缺少任一模型配置直接退出；不回退假模型。
+默认并发1，每次 trial 最长120秒，工具调用最多8轮；分类、核验及核验重试也会调用模型并消耗 token。
+取消后已完成的 trial 保留在 JSONL 中。重复运行必须用新的输出目录，不覆盖旧报告。
+
+输出在 `lab/results/eval-*`：
+
+- `manifest.json`：模型、源码版本与指纹、依赖版本、案例文件指纹、任务选择和预算。
+- `trials.jsonl`：完整模型输入与事件、工具调用企图（包括被拒绝的企图）、真实执行回执、最终数据库、断言与耗时。
+- `summary.json`：按类别汇总、失败断言、token 和 p50/p95 耗时。
+
+通过要求运行完成、匹配指定回答模式、满足所需工具调用、没有禁止的调用，并且数据库全部单元格符合预期。
+这只是可复查的规则评分，**不能直接解释为幻觉率或语义正确率**；全部案例仍需语义复核。
+核验器的 supported 不是评分真值。权限案例只验证工具路由与合成资源边界，不证明生产 IAM 正确。
+多轮案例目前是固定历史，不包含动态用户模拟或完整跨轮记忆服务。
+报告汇总所有模型事件中的 usage，包括核验失败重试；未返回 usage 的接口可能低估 token，不估算未知价格。
+本地报告包含合成任务的完整对话，仅提交脱敏汇总，不提交轨迹、密钥和公司快照。
+
 ## 两条工作线
 
 1. [论文与业界实践](research.md)：记录来源、阅读深度、可检验假设、实验和结论。先留基线，再一次改变一个变量。
@@ -27,11 +68,11 @@ python lab/run_baseline.py --suite apps.agent_runtime.tests.test_response_verifi
 ## 后续实现顺序
 
 1. 运行现有离线基线，记录失败，不预先更改生产语义。
-2. 接入 `Phase2AgentRuntimeFacade` 的真实模型适配器和固定工具环境；显式提供模型配置、上下文、工具 schema、权限、classifier/verifier，缺失配置直接失败，禁止退回 fake gateway。
+2. 已接入真实模型与固定业务环境；先运行小集，再分析完整基线。
 3. 用 tau2 原生环境/评分器对接同一执行图。不能把 tau2 数据文件直接当成普通问答。
-4. 补透明公司案例：无证据回答、空查询、失败工具、跨公司权限、错误成功声明、多轮更正；验证数据库最终状态。
+4. 将线上真实失败脱敏转为案例，增加独立保留集；当前30条仅为合成开发集。
 5. 数据库集成使用独立测试实例与生产同类引擎，每例重置数据。离线 SQLite 设置只用于无需数据库的回归，不用于证明生产 SQL 正确。
 6. 比较 baseline 与单变量改动：成功率、无依据事实率、虚假完成率、权限违规、p50/p95 时延、token 和费用。固定任务、模型、预算和种子；随机性案例重复运行，报告分母与不确定性。
 
 保留开发集与冻结保留集；保留集不得参与提示词调整或训练。业务权限违规和虚假完成单列，不能被平均总分掩盖。
-尚未执行真实模型评测，也没有证据表明任何候选架构优于当前架构。
+当前工作先建立真实模型基线，没有证据表明任何候选架构优于当前架构。

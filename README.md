@@ -6,9 +6,12 @@
 
 ```powershell
 python lab/run_baseline.py --repeat 3
+python lab/run_eval.py --dry-run
 ```
 
 完整后端暂保留以复用业务工具与权限，未完成独立内核抽取。上游远程名为 `upstream`；独立仓库为 [nalalana/agent-lab](https://github.com/nalalana/agent-lab)，开发主分支为 `main`。
+
+真实模型评测入口：`lab/run_eval.py`。包含30条合成业务案例和每次运行独立的 SQLite 工具环境；模型配置、运行与结果限制见 [说明](lab/README.md#真实模型业务评测)。
 
 以下为继承的上游说明。
 
