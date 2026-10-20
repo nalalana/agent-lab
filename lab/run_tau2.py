@@ -56,6 +56,11 @@ def main():
     os.environ["OPENAI_API_BASE"] = config["BASE_URL"]
     model = "openai/" + config["MODEL"]
     llm_args = {"temperature": 0, "max_tokens": 2048, "timeout": 60, "num_retries": 0}
+    # Upstream exposes communicate-info settings but hard-codes the NL assertion
+    # judge in this module. Override its model only; preserve its grading logic.
+    import tau2.evaluator.evaluator_nl_assertions as nl_evaluator
+    nl_evaluator.DEFAULT_LLM_NL_ASSERTIONS = model
+    nl_evaluator.DEFAULT_LLM_NL_ASSERTIONS_ARGS = llm_args
     run_config = TextRunConfig(domain=args.domain, task_split_name=args.split, agent="llm_agent",
         llm_agent=model, llm_args_agent=llm_args, user="user_simulator", llm_user=model,
         llm_args_user=llm_args, num_trials=1, max_steps=args.max_steps, max_errors=5,
@@ -67,6 +72,7 @@ def main():
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
         "dataset_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=DATASET, text=True).strip(),
+        "nl_assertion_judge_override": {"model": model, "model_args": llm_args},
         "config": run_config.model_dump(mode="json"),
         "dependencies": {name: version(name) for name in ("tau2", "litellm", "openai", "pydantic")},
         "python": sys.version})
