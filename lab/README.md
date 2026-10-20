@@ -120,3 +120,5 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 受控工具实现位于 `lab/durable_counter.py`，仅用标准库：运行时journal在发送前持久化unknown，业务端把计数变更和幂等操作记录放在同一SQLite事务。scope、intent与操作ID由可信调用方绑定，不是模型工具参数；重复intent不能换payload。查不到记录仍是unknown，不能据此断言没有副作用；仅此已具备原子幂等合同的工具允许可信恢复流程复用原键重试。恢复图只开放绑定当前操作的查询，不开放写入。
 
 这是受控后端合同验证，未接入原生tau2工具或生产数据库；未实现完整LangGraph检查点恢复、平台IAM或任意第三方工具的幂等。操作ID只有在可信调用方跨会话保持同一逻辑intent时才有效，不能自动识别用户换个说法重复提出的请求。
+
+首轮结果：[持久操作恢复报告](experiments/2026-10-20-durable-operation-recovery.md)。5组跨进程/并发流程检查通过，2条真实模型恢复任务正常完成且未写入业务；仅验证受控SQLite合同，未恢复整个平台执行流程。
