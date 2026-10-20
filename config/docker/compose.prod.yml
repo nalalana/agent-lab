@@ -1,0 +1,264 @@
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: touming-postgres-prod
+    profiles:
+      - local-state
+    user: "0:0"
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../logs/postgresql:/var/log/postgresql
+    networks:
+      - touming-network
+    restart: unless-stopped
+    entrypoint: >
+      sh -c "
+        chown -R postgres:postgres /var/lib/postgresql/data 2>/dev/null || true &&
+        chown -R postgres:postgres /var/log/postgresql 2>/dev/null || true &&
+        chmod -R 700 /var/lib/postgresql/data &&
+        chmod -R 755 /var/log/postgresql &&
+        exec su-exec postgres:postgres docker-entrypoint.sh postgres
+          -c logging_collector=on
+          -c log_directory=/var/log/postgresql
+          -c log_filename=pg_log_%Y%m%d_%H%M%S.log
+          -c log_rotation_age=1d
+          -c log_rotation_size=10MB
+          -c log_statement=none
+          -c log_duration=on
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Immudb 主节点
+  immudb-primary:
+    image: codenotary/immudb:latest
+    container_name: immudb-primary-prod
+    user: "0:0"
+    ports:
+      - "127.0.0.1:${IMMUDB_PRIMARY_PORT:-3322}:3322"
+      - "127.0.0.1:${IMMUDB_PRIMARY_METRICS_PORT:-9497}:9497"
+    command: >
+      --dir=/var/lib/immudb_primary
+      --metrics-server=true
+      --metrics-server-port=9497
+    volumes:
+      - immudb_primary_data:/var/lib/immudb_primary
+    environment:
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD}
+    networks:
+      - touming-network
+    restart: unless-stopped
+
+  # Immudb 副本节点
+  immudb-replica1:
+    image: codenotary/immudb:latest
+    container_name: immudb-replica1-prod
+    user: "0:0"
+    ports:
+      - "127.0.0.1:${IMMUDB_REPLICA1_PORT:-3323}:3322"
+      - "127.0.0.1:${IMMUDB_REPLICA1_METRICS_PORT:-9498}:9497"
+    command: >
+      --dir=/var/lib/immudb_replica1
+      --pgsql-server=false
+      --metrics-server=false
+    volumes:
+      - immudb_replica1_data:/var/lib/immudb_replica1
+    depends_on:
+      - immudb-primary
+    environment:
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD}
+    networks:
+      - touming-network
+    restart: unless-stopped
+
+  # Immudb 复制器
+  replicator:
+    image: codenotary/immudb-replicator
+    container_name: immudb-replicator-prod
+    environment:
+      - MASTER_ADDRESS=immudb-primary
+      - MASTER_PASSWORD=${IMMUDB_ADMIN_PASSWORD}
+      - REPLICA_ADDRESS=immudb-replica1
+      - REPLICA_PASSWORD=${IMMUDB_ADMIN_PASSWORD}
+      - DELAY=${REPLICATOR_DELAY:-30}
+    depends_on:
+      - immudb-primary
+      - immudb-replica1
+    networks:
+      - touming-network
+    restart: unless-stopped
+
+  # Redis 服务（用于 Channels WebSocket 和 Celery）
+  redis:
+    image: redis:7-alpine
+    container_name: touming-redis-prod
+    profiles:
+      - local-state
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_me_local_redis_password}
+    volumes:
+      - redis_data:/data
+    networks:
+      - touming-network
+    command: >
+      sh -c 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django 后端应用
+  backend:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    container_name: touming-backend-prod
+    ports:
+      - "${BACKEND_PORT:-8001}:8001"
+    env_file:
+      - ../../config/env/.prod
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.prod}
+      - AGSX_RUNTIME_ENV_FILE=/app/.env.agsx
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - IMMUDB_HOST=immudb-primary
+      - IMMUDB_PORT=3322
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD}
+      - SECRET_KEY=${DJANGO_SECRET_KEY}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      # Redis 配置（用于 Channels 和 Celery）
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+    volumes:
+      - ../../backend/logs:/app/logs
+      - ../../logs:/logs
+      - ../../backend/static:/app/static
+      - ../../backend/media:/app/media
+      # 挂载环境变量文件，作为备用方案（Django 的 load_dotenv 可以读取）
+      - ../../config/env/.prod:/app/.env.prod:ro
+      - /etc/touming/agsx/runtime.env:/app/.env.agsx:ro
+    depends_on:
+      immudb-primary:
+        condition: service_started
+    networks:
+      - touming-network
+    restart: unless-stopped
+    command: >
+      sh -c "
+        python manage.py migrate --noinput &&
+        python manage.py collectstatic --noinput &&
+        exec daphne -b 0.0.0.0 -p 8001 config.asgi:application
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Celery Worker（异步任务处理）
+  celery-worker:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    container_name: touming-celery-worker-prod
+    env_file:
+      - ../../config/env/.prod
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.prod}
+      - AGSX_RUNTIME_ENV_FILE=/app/.env.agsx
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - IMMUDB_HOST=immudb-primary
+      - IMMUDB_PORT=3322
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+    volumes:
+      - ../../backend/logs:/app/logs
+      - ../../logs:/logs
+      - ../../config/env/.prod:/app/.env.prod:ro
+      - /etc/touming/agsx/runtime.env:/app/.env.agsx:ro
+    networks:
+      - touming-network
+    restart: unless-stopped
+    command: celery -A config worker -l info --concurrency=4
+
+  celery-beat:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    container_name: touming-celery-beat-prod
+    env_file:
+      - ../../config/env/.prod
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.prod}
+      - AGSX_RUNTIME_ENV_FILE=/app/.env.agsx
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}}
+    volumes:
+      - ../../backend/logs:/app/logs
+      - ../../logs:/logs
+      - ../../config/env/.prod:/app/.env.prod:ro
+      - /etc/touming/agsx/runtime.env:/app/.env.agsx:ro
+    networks:
+      - touming-network
+    restart: unless-stopped
+    command: celery -A config beat -l info
+
+volumes:
+  postgres_data:
+    driver: local
+  immudb_primary_data:
+    driver: local
+  immudb_replica1_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  touming-network:
+    driver: bridge
+

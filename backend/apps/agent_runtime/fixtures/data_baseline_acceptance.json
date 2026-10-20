@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "phase0-b-acceptance-v1",
+  "companies": [
+    {
+      "cid": "phase0-company-alpha",
+      "name": "Phase 0 Alpha Company",
+      "owner": {
+        "uid": "phase0-alpha-admin",
+        "username": "phase0-alpha-admin"
+      },
+      "companyPrompt": "Only use Alpha company data and never reveal another company's context.",
+      "skill": {
+        "skillId": "phase0-safe-answering",
+        "name": "Phase 0 Safe Answering",
+        "content": "Answer only with information authorized for the current company."
+      },
+      "agents": [
+        {
+          "agentId": "alpha-a1",
+          "name": "Alpha Public Agent",
+          "public": true,
+          "pythonAllowed": true,
+          "memoryEnabled": true,
+          "prompt": "You are Alpha's public acceptance-test agent."
+        },
+        {
+          "agentId": "alpha-a2",
+          "name": "Alpha Internal Agent",
+          "public": false,
+          "pythonAllowed": false,
+          "memoryEnabled": false,
+          "prompt": "You are Alpha's isolated internal acceptance-test agent."
+        }
+      ],
+      "memorySample": {
+        "agentId": "alpha-a1",
+        "memoryKey": "phase0-project-code",
+        "memoryType": "identity",
+        "content": "ALPHA-ONLY-731"
+      },
+      "workspaceFile": {
+        "logicalPath": "/knowledge/phase0-alpha.txt",
+        "fileName": "phase0-alpha.txt",
+        "storageKey": "phase0/alpha/knowledge/phase0-alpha.txt"
+      }
+    },
+    {
+      "cid": "phase0-company-beta",
+      "name": "Phase 0 Beta Company",
+      "owner": {
+        "uid": "phase0-beta-admin",
+        "username": "phase0-beta-admin"
+      },
+      "companyPrompt": "Only use Beta company data and never reveal another company's context.",
+      "skill": {
+        "skillId": "phase0-safe-answering",
+        "name": "Phase 0 Safe Answering",
+        "content": "Answer only with information authorized for the current company."
+      },
+      "agents": [
+        {
+          "agentId": "beta-b1",
+          "name": "Beta Public Agent",
+          "public": true,
+          "pythonAllowed": true,
+          "memoryEnabled": true,
+          "prompt": "You are Beta's public acceptance-test agent."
+        },
+        {
+          "agentId": "beta-b2",
+          "name": "Beta Internal Agent",
+          "public": false,
+          "pythonAllowed": false,
+          "memoryEnabled": false,
+          "prompt": "You are Beta's isolated internal acceptance-test agent."
+        }
+      ],
+      "memorySample": {
+        "agentId": "beta-b1",
+        "memoryKey": "phase0-project-code",
+        "memoryType": "identity",
+        "content": "BETA-ONLY-942"
+      },
+      "workspaceFile": {
+        "logicalPath": "/knowledge/phase0-beta.txt",
+        "fileName": "phase0-beta.txt",
+        "storageKey": "phase0/beta/knowledge/phase0-beta.txt"
+      }
+    }
+  ]
+}

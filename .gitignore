@@ -1,0 +1,92 @@
+# Logs
+/lab/datasets/
+/lab/results/
+/lab/.venv/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+*.ps1
+
+# Global Python ignores
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+/backend/.log
+/backend/.idea
+/backend/properties.py
+/properties.py
+/backend/__pycache__
+/backend/*.pycnohup.log
+/backend/nohup.log
+/backend/.venv
+/backend/db.sqlite3
+/backend/test.py
+/backend/media
+/backend/*/__pycache__
+/backend/apps/*/__pycache__
+
+# Django migrations are source-controlled schema history.
+# Ignore only generated cache files inside migration folders.
+backend/**/migrations/__pycache__/
+backend/**/migrations/*.pyc
+/prometheus
+/grafana
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.*.local
+.env.example
+config/env/.dev
+config/env/.test
+config/env/.prod
+config/env/.dev.local
+config/env/.test.local
+config/env/.prod.local
+
+# data
+data/
+
+# logs
+logs/
+
+# Local AGSX production inputs/outputs must never be committed.
+config/agsx/deploy.env
+config/agsx/runtime.env
+
+docs/*
+!docs/runtime-skills-audit.md
+!docs/phase0-b-data-baseline-schema.md
+!docs/phase4-c-infrastructure-retirement.md
+dist/
+
+# local backup files
+*.bak
+*.bak.*
+*.bak.project-update.*
+
+# local backup files
+*.bak
+*.bak.*
+backend/.env.dev

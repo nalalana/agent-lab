@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenClaw runtime daily backup
+Documentation=docs/backup-immudb-openclaw-dr.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/tsds/openclaw-runtime-backup.env
+ExecStart=/usr/bin/bash /opt/touming-ops/backup_232_openclaw.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

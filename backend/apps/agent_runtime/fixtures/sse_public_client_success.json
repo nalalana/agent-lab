@@ -1,0 +1,28 @@
+[
+  {
+    "event": "start",
+    "data": {
+      "conversation_id": "conv-public-1",
+      "session_key": "session-public-1",
+      "agent": {"agent_id": "support-agent", "entry_key": "__default__"},
+      "user_message": {"role": "user", "content": "hello"}
+    }
+  },
+  {
+    "event": "delta",
+    "data": {"delta": "Hi", "content": "Hi"}
+  },
+  {
+    "event": "complete",
+    "data": {
+      "content": "Hi",
+      "token_count": 3,
+      "conversation_id": "conv-public-1",
+      "session_key": "session-public-1",
+      "agent": {"agent_id": "support-agent", "entry_key": "__default__"},
+      "tool_calls": [],
+      "assistant_message": {"role": "assistant", "content": "Hi"},
+      "conversation": {"conversationId": "conv-public-1"}
+    }
+  }
+]

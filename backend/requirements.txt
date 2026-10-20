@@ -1,0 +1,43 @@
+Django~=4.2
+djangorestframework~=3.15.2
+requests>=2.33.0,<3
+PyJWT>=2.12.0,<3
+python-dotenv>=1.2.2,<2
+PyMySQL>=1.1.1,<2
+mysqlclient~=2.2.4
+django-cors-headers
+Pillow
+immudb-py==1.4.1
+
+pyasn1-modules~=0.4.1
+django-simple-captcha~=0.6.2
+django-crontab~=0.7.1
+psycopg2-binary~=2.9.10
+cos-python-sdk-v5~=1.9.38
+tencentcloud-sdk-python~=3.1.0
+cryptography>=45,<51
+PyYAML~=6.0.3
+langchain-core>=0.3.0,<0.4
+langchain-openai>=0.2.0,<0.3
+openai>=1.52.0,<2
+langgraph>=0.2.0,<0.3
+
+# 消息通知相关依赖
+channels~=4.0.0
+channels-redis~=4.1.0
+celery~=5.3.0
+redis~=5.0.0
+django-redis~=5.4.0
+
+# IP 地理位置相关依赖
+# 方案1：iputil（推荐，简单易用）
+iputil~=0.1.0
+# 或者方案2：ip-region（支持缓存）
+# ip-region~=1.0.0
+
+# AGSX Phase 0: interpreter 2.9.0 requires the pre-2.38 transport signature.
+e2b-code-interpreter==2.9.0
+e2b==2.37.1
+
+pypdf>=5.0,<6.0
+reportlab>=4.0,<5.0

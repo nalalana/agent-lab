@@ -1,0 +1,61 @@
+{
+  "ToolName": "touming-code-v1",
+  "ToolType": "custom",
+  "Description": "Touming production isolated code interpreter, 2 CPU and 2 GiB",
+  "DefaultTimeout": "5m",
+  "ClientToken": "210c7f76-72d8-4706-98d4-27a9832157cd",
+  "NetworkConfiguration": {
+    "NetworkMode": "SANDBOX"
+  },
+  "RoleArn": "qcs::cam::uin/100036565087:roleName/ags-ccr-full",
+  "CustomConfiguration": {
+    "Image": "ccr.ccs.tencentyun.com/touming/code:v1",
+    "ImageRegistryType": "personal",
+    "Command": [
+      "/init"
+    ],
+    "Args": [
+      "sleep",
+      "infinity"
+    ],
+    "Resources": {
+      "CPU": "2",
+      "Memory": "2Gi"
+    },
+    "Ports": [
+      {
+        "Name": "run-code",
+        "Port": 49999,
+        "Protocol": "TCP"
+      },
+      {
+        "Name": "envd",
+        "Port": 49983,
+        "Protocol": "TCP"
+      }
+    ],
+    "Probe": {
+      "HttpGet": {
+        "Path": "/health",
+        "Port": 49983,
+        "Scheme": "HTTP"
+      },
+      "ReadyTimeoutMs": 30000,
+      "ProbeTimeoutMs": 1000,
+      "ProbePeriodMs": 1000,
+      "SuccessThreshold": 1,
+      "FailureThreshold": 30
+    }
+  },
+  "Persistent": false,
+  "Tags": [
+    {
+      "Key": "service",
+      "Value": "touming"
+    },
+    {
+      "Key": "schemaVersion",
+      "Value": "1"
+    }
+  ]
+}

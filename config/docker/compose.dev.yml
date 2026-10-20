@@ -1,0 +1,224 @@
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: touming-postgres-dev
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-touming_dev}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - /home/ubuntu/docker-data/touming/postgres_dev:/var/lib/postgresql/data
+      - ../../logs/postgresql:/var/log/postgresql
+    networks:
+      - immudb-network
+    command: >
+      postgres
+      -c logging_collector=off
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  immudb-primary:
+    image: codenotary/immudb:latest
+    container_name: immudb-primary
+    ports:
+      - "127.0.0.1:${IMMUDB_PRIMARY_PORT:-3322}:3322"
+      - "127.0.0.1:${IMMUDB_PRIMARY_METRICS_PORT:-9497}:9497"
+    command: >
+      --dir=/var/lib/immudb_primary
+      --metrics-server=true
+      --metrics-server-port=9497
+    volumes:
+      - ../../data/primary:/var/lib/immudb_primary
+    environment:
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD:-immudb}
+    networks:
+      - immudb-network
+    restart: unless-stopped
+
+  immudb-replica1:
+    image: codenotary/immudb:latest
+    container_name: immudb-replica1
+    ports:
+      - "127.0.0.1:${IMMUDB_REPLICA1_PORT:-3323}:3322"
+      - "127.0.0.1:${IMMUDB_REPLICA1_METRICS_PORT:-9498}:9497"
+    command: >
+      --dir=/var/lib/immudb_replica1
+      --pgsql-server=false
+      --metrics-server=false
+    volumes:
+      - ../../data/replica1:/var/lib/immudb_replica1
+    depends_on:
+      - immudb-primary
+    environment:
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD:-immudb}
+    networks:
+      - immudb-network
+
+  replicator:
+    image: codenotary/immudb-replicator
+    container_name: immudb-replicator
+    environment:
+      - MASTER_ADDRESS=immudb-primary
+      - MASTER_PASSWORD=${IMMUDB_ADMIN_PASSWORD:-immudb}
+      - REPLICA_ADDRESS=immudb-replica1
+      - REPLICA_PASSWORD=${IMMUDB_ADMIN_PASSWORD:-immudb}
+      - DELAY=${REPLICATOR_DELAY:-30}
+    depends_on:
+      - immudb-primary
+      - immudb-replica1
+    networks:
+      - immudb-network
+
+  # Redis 服务（用于 Channels WebSocket 和 Celery）
+  redis:
+    image: redis:7-alpine
+    container_name: touming-redis-dev
+    ports:
+      - "127.0.0.1:${REDIS_PUBLIC_PORT:-6380}:6379"
+    volumes:
+      - ../../data/redis_dev:/data
+    networks:
+      - immudb-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django 后端应用
+  backend:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    container_name: touming-backend-dev
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    env_file:
+      - ../../config/env/.dev
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      - PYTHONPATH=/app
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-touming_dev}
+      - IMMUDB_HOST=immudb-primary
+      - IMMUDB_PORT=3322
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD:-immudb}
+      - SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      # Redis 配置（用于 Channels 和 Celery）
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    volumes:
+      - ../../backend:/app
+      - ../../backend/logs:/app/logs
+      - ../../logs:/logs
+      - ../../backend/static:/app/static
+      - ../../backend/media:/app/media
+      - ../../config/env:/config/env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      immudb-primary:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    networks:
+      - immudb-network
+    restart: unless-stopped
+    command: >
+      sh -c "python /app/scripts/ensure_postgres_db.py && python manage.py migrate --noinput && exec daphne -b 0.0.0.0 -p 8000 config.asgi:application"
+
+  # Celery Worker（异步任务处理）
+  celery-worker:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    container_name: touming-celery-worker-dev
+    env_file:
+      - ../../config/env/.dev
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-touming_dev}
+      - IMMUDB_HOST=immudb-primary
+      - IMMUDB_PORT=3322
+      - IMMUDB_ADMIN_PASSWORD=${IMMUDB_ADMIN_PASSWORD:-immudb}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    volumes:
+      - ../../backend:/app
+      - ../../backend/logs:/app/logs
+      - ../../logs:/logs
+      - ../../config/env:/config/env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - immudb-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q OK"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    command: >
+      sh -c "python /app/scripts/ensure_postgres_db.py && exec celery -A config worker -l info"
+
+  celery-beat:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    container_name: touming-celery-beat-dev
+    env_file:
+      - ../../config/env/.dev
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-touming_dev}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    volumes:
+      - ../../backend:/app
+      - ../../backend/logs:/app/logs
+      - ../../logs:/logs
+      - ../../config/env:/config/env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - immudb-network
+    restart: unless-stopped
+    command: >
+      sh -c "python /app/scripts/ensure_postgres_db.py && exec celery -A config beat -l info"
+
+networks:
+  immudb-network:
+    driver: bridge

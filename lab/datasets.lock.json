@@ -1,0 +1,14 @@
+{
+  "retrieved_on": "2026-10-20",
+  "datasets": [
+    {
+      "name": "tau2-bench",
+      "repository": "https://github.com/sierra-research/tau2-bench.git",
+      "revision": "989d3285ae669e49503324bdb9981bf14fccedeb",
+      "path": "lab/datasets/tau2-bench",
+      "license_file": "LICENSE",
+      "license_observed": "MIT",
+      "status": "downloaded_not_integrated"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Touming immudb backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:10:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=touming-immudb-backup.service
+
+[Install]
+WantedBy=timers.target

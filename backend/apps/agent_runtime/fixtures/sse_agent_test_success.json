@@ -1,0 +1,26 @@
+[
+  {
+    "event": "start",
+    "data": {
+      "conversation": {"conversationId": "conv-agent-test-1"},
+      "user_message": {"role": "user", "content": "hello"}
+    }
+  },
+  {
+    "event": "status",
+    "data": {"message": "Runtime 已连接，正在等待 Agent 输出。"}
+  },
+  {
+    "event": "delta",
+    "data": {"delta": "Hi", "content": "Hi"}
+  },
+  {
+    "event": "complete",
+    "data": {
+      "assistant_message": {"role": "assistant", "content": "Hi"},
+      "conversation": {"conversationId": "conv-agent-test-1"},
+      "token_count": 3,
+      "tool_calls": []
+    }
+  }
+]
