@@ -31,6 +31,19 @@ class ScriptedGateway:
 
 
 class GraphBridgeTests(unittest.TestCase):
+    def test_model_failure_is_explicit_graph_terminal_state(self):
+        class FailingGateway:
+            async def stream(self, request):
+                yield ModelEvent("error", {"code": "MODEL_TIMEOUT", "message": "unavailable", "retryable": True})
+        async def run():
+            engine = Engine({"tools": [], "read_names": [], "policy": "Read only."},
+                            {"MODEL": "scripted"}, FailingGateway())
+            reply = await engine.step({"kind": "user", "content": "Help"})
+            self.assertEqual(reply["status"], "FAILED")
+            self.assertEqual(reply["error"]["code"], "MODEL_TIMEOUT")
+            self.assertFalse(engine.active)
+        asyncio.run(run())
+
     def test_real_graph_pause_resume_and_external_receipt_validation(self):
         async def run():
             tools = [{"type": "function", "function": {"name": name, "parameters": {
