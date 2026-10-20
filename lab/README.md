@@ -110,3 +110,5 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 `python lab/run_outcome_faults.py --output lab/results/<新目录>` 用真实模型、实际SQLite提交和人工注入的丢失回执比较开关两种配置。覆盖提交后超时、提交前超时、执行前拒绝、正常返回、业务拒绝和只读超时；不接触外部业务数据库。这是合成故障诊断，不是公开基准。`python lab/test_operation_outcome.py` 验证模型无法覆盖硬停止及已排队调用不会继续。
 
 边界：门闩只在当前worker任务内有效，尚无跨进程持久恢复、幂等业务状态查询或自动对账；会停止全部后续工具，而非自动恢复业务。仅作为默认关闭的实验，不能推广为生产级幂等保障。
+
+首轮结果见[未知操作结果实验](experiments/2026-10-20-unknown-operation-outcome.md)：两条真实模型未知写入均被硬停止，106项检查通过；普通tau2中门闩触发0次，不能将成绩变化归因于该机制。仍默认关闭，尚无跨进程幂等与自动对账。

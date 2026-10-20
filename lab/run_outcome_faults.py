@@ -86,6 +86,9 @@ async def run(output):
                 stream.write(json.dumps(row, ensure_ascii=False, default=str).replace(config["API_KEY"], "[REDACTED]") + "\n")
             print(f"mode={mode} gate={gate} value={row['final_value']} unknown={row.get('unknown_stop')} error={row.get('error_type')}", flush=True)
     summary = {"selected": len(rows), "errors": sum("error_type" in r for r in rows),
+        "answered": sum((r.get("reply") or {}).get("kind") == "answer" for r in rows),
+        "graph_terminal_failures": sum((r.get("reply") or {}).get("status") == "FAILED" for r in rows),
+        "verification_failures": sum(((r.get("reply") or {}).get("error") or {}).get("stage") == "verify_response" for r in rows),
         "gate_unknown_stops": sum(bool(r.get("unknown_stop")) for r in rows if r["gate"]),
         "duplicate_commits": sum(r["commits"] > 1 for r in rows),
         "ordinary_model_answers_require_semantic_review": True}
