@@ -19,6 +19,7 @@ from durable_counter import transaction
 from legacy_write_guard import LegacyWriteGuard, OutcomeUnknown
 
 SOURCE = ROOT / "backend/apps/opengate/services.py"
+CLIENT_SOURCE = ROOT / "backend/common/immudbIO/client.py"
 
 
 class RemoteFixture:
@@ -90,6 +91,8 @@ def run(output):
     manifest = {"kind": "source_extracted_cross_database_contract_diagnostic",
         "time": datetime.now(timezone.utc).isoformat(), "source": str(SOURCE.relative_to(ROOT)),
         "source_sha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
+        "client_source": str(CLIENT_SOURCE.relative_to(ROOT)),
+        "client_sha256": hashlib.sha256(CLIENT_SOURCE.read_bytes()).hexdigest(),
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
         "substitutions": ["IAM allow fixture", "moderation allow fixture", "immudb replaced by independent SQLite"],
@@ -216,11 +219,51 @@ else: raise AssertionError('retry accepted')
         assert remote.calls == calls and remote.values(t.tid)[0]["value"] == "200"
         return {"original_version_rejected_after_intervening_write": True, "intervening_value_preserved": 200}
 
+    def hidden_client_retry():
+        tree = ast.parse(CLIENT_SOURCE.read_text(encoding="utf-8"))
+        body = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {"RETRY_MAX_COUNT", "SLEEP_MIN", "SLEEP_MAX"} for t in node.targets):
+                body.append(node)
+            elif isinstance(node, ast.ClassDef) and node.name == "toumingClient":
+                node.body = [m for m in node.body if getattr(m, "name", None) == "upsertToTable"]
+                body.append(node)
+        remote = RemoteFixture(output / "remote.sqlite", "lost_ack")
+        tid = "client-retry"
+        sql_calls = []
+        def sql_exec(query, params):
+            sql_calls.append(query)
+            remote.upsert_data("gid", tid, params)
+            return SimpleNamespace(txs=[1], ongoingTx=False)
+        def intervening_write(_seconds):
+            remote.upsert_data("gid", tid, {"r": 0, "c": 0, "cts": "200"})
+        namespace = {"time": SimpleNamespace(sleep=intervening_write),
+            "random": SimpleNamespace(uniform=lambda *_: 0),
+            "print": lambda *args: logger.warning(" ".join(str(x) for x in args))}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(CLIENT_SOURCE), "exec"), namespace)
+        client = namespace["toumingClient"]()
+        client.currentTx = None
+        client.client = SimpleNamespace(sqlExec=sql_exec)
+        client.prepareUpsertQuery = lambda *_: "fixture-upsert"
+        outer_calls = []
+        def execute():
+            outer_calls.append(1)
+            response = client.upsertToTable(tid, [], [], {"r": 0, "c": 0, "cts": "100"})
+            return True, {"confirmed_txs": len(response.txs)}
+        guard = LegacyWriteGuard(output / "guard.sqlite", scope="company:user:agent:sdk-task")
+        guard.invoke("edit", "company.table.write", {"tid": tid}, authorize=lambda: True, execute=execute)
+        assert len(outer_calls) == 1 and len(sql_calls) == 2
+        assert remote.values(tid)[0]["value"] == "100"
+        assert guard.status("edit", authorize=lambda: True)["state"] == "acknowledged"
+        return {"outer_guard_executions": 1, "client_sql_attempts": 2, "retry_limit": namespace["RETRY_MAX_COUNT"],
+                "intervening_value": 200, "final_value": 100, "outer_guard_cannot_stop_inner_retries": True}
+
     record("cross_database_lost_ack", lost_ack)
     record("multi_cell_partial_failure", partial)
     record("persistent_unknown_guard", guarded)
     record("acknowledged_replay_authorization", replay)
     record("original_version_precondition", stale_version)
+    record("hidden_storage_client_retry", hidden_client_retry)
     (output / "trials.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     summary = {"selected": len(rows), "checks_passed": sum(r["checks_passed"] for r in rows),
                "errors": sum(not r["checks_passed"] for r in rows), "not_a_full_platform_integration": True}
