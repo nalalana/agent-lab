@@ -8,7 +8,7 @@
       "path": "lab/datasets/tau2-bench",
       "license_file": "LICENSE",
       "license_observed": "MIT",
-      "status": "downloaded_not_integrated"
+      "status": "native_reference_runner_integrated_production_graph_adapter_pending"
     },
     {
       "name": "RAGTruth",

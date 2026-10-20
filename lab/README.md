@@ -65,6 +65,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 1. [论文与业界实践](research.md)：记录来源、阅读深度、可检验假设、实验和结论。先留基线，再一次改变一个变量。
 2. [数据集与批量测试](datasets.md)：原始数据版本锁定，优先原生评测器，业务测试独立报告。
 
+公开数据入口：`python lab/run_ragtruth.py --dry-run` 验证200条核验器诊断计划；τ²使用独立环境运行 `lab/.venv/Scripts/python.exe lab/run_tau2.py --dry-run`。
+安装、评分口径和限制见[数据集说明](datasets.md)。τ²当前入口使用原生参考scaffold，尚未适配生产执行图。
+
 ## 后续实现顺序
 
 1. 运行现有离线基线，记录失败，不预先更改生产语义。
@@ -81,3 +84,4 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 
 - [首轮真实模型业务基线](experiments/2026-10-20-qwen-baseline.md)：澄清坐标后的30条案例，规则通过23条。
 - [表格证据契约实验](experiments/2026-10-20-table-evidence.md)：同集规则通过28条，包含剩余失败、针对性重复和语义抽查问题；尚未回迁生产。
+- [公开数据首轮结果](experiments/2026-10-20-public-datasets.md)：RAGTruth200条核验器诊断与τ²零售10条原生参考，分别报告口径与剩余工作。
