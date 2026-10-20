@@ -18,11 +18,14 @@ from run_eval import EnvironmentCredentials, TracedGateway, model_config
 DATASET = ROOT / "lab/datasets/RAGTruth"
 
 
-def select_samples(dataset, limit=200, seed=42):
+def select_samples(dataset, limit=200, seed=42, split="test", pool="all"):
     sources = {s["source_id"]: s for s in map(json.loads, (dataset / "dataset/source_info.jsonl").read_text(encoding="utf-8").splitlines())}
     buckets = {}
     for response in map(json.loads, (dataset / "dataset/response.jsonl").read_text(encoding="utf-8").splitlines()):
-        if response["split"] != "test" or response["quality"] != "good":
+        if response["split"] != split or response["quality"] != "good":
+            continue
+        held_out = int(hashlib.sha256(response["source_id"].encode()).hexdigest(), 16) % 5 == 0
+        if (pool == "dev" and held_out) or (pool == "holdout" and not held_out):
             continue
         source = sources[response["source_id"]]
         buckets.setdefault((bool(response["labels"]), source["task_type"]), []).append((source, response))
@@ -86,6 +89,9 @@ def metrics(records):
 async def evaluate(args, samples, config):
     from apps.agent_runtime.providers.model.openai_compatible import OpenAICompatibleModelGateway
     from apps.agent_runtime.response_verification import ModelResponseVerifier
+    import apps.agent_runtime.response_verification as verification
+    if args.prompt_suffix:
+        verification.VERIFICATION_PROMPT += "\n" + args.prompt_suffix.read_text(encoding="utf-8")
     output = args.output or ROOT / "lab/results" / ("ragtruth-" + uuid4().hex[:10])
     output.mkdir(parents=True, exist_ok=False)
     state_manifest = {"kind": "adapted_ragtruth_response_level_verifier_diagnostic", "time": datetime.now(timezone.utc).isoformat(),
@@ -95,7 +101,10 @@ async def evaluate(args, samples, config):
         "dataset_hashes": {name: hashlib.sha256((args.dataset / "dataset" / name).read_bytes()).hexdigest()
                            for name in ("response.jsonl", "source_info.jsonl")},
         "model": config["MODEL"], "seed": args.seed, "concurrency": args.concurrency,
-        "sample_ids": [r["id"] for _, r in samples], "selection": "test/quality=good, round-robin gold×task, unique source_id",
+        "sample_ids": [r["id"] for _, r in samples], "source_ids": [s["source_id"] for s, _ in samples],
+        "split": args.split, "pool": args.pool,
+        "selection": "quality=good, round-robin gold×task, unique source_id; train holdout=SHA256(source_id)%5==0",
+        "verifier_prompt_sha256": hashlib.sha256(verification.VERIFICATION_PROMPT.encode()).hexdigest(),
         "gold": "positive iff any annotated span, including implicit_true as in upstream preparation",
         "adaptation": "append Source path to original draft; map reference to successful workspace.read; no labels in model input",
         "not_official_span_level_score": True}
@@ -145,13 +154,18 @@ def main():
     parser.add_argument("--dataset", type=Path, default=DATASET)
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--split", choices=["train", "test"], default="test")
+    parser.add_argument("--pool", choices=["all", "dev", "holdout"], default="all")
+    parser.add_argument("--prompt-suffix", type=Path, help="Lab-only candidate; never modifies production source")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.limit < 1 or not 1 <= args.concurrency <= 10:
         parser.error("limit must be positive; concurrency must be 1–10")
-    samples = select_samples(args.dataset, args.limit, args.seed)
+    if args.split == "test" and args.pool != "all":
+        parser.error("dev/holdout pools are defined only within train")
+    samples = select_samples(args.dataset, args.limit, args.seed, args.split, args.pool)
     if args.dry_run:
         print(json.dumps({"selected": len(samples), "strata": {str(k): v for k, v in Counter(
             (s["task_type"], bool(r["labels"])) for s, r in samples).items()}, "model_calls": 0}, indent=2))

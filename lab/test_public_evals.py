@@ -9,6 +9,19 @@ from run_ragtruth import metrics, select_samples, verifier_input
 
 
 class PublicEvaluationTests(unittest.TestCase):
+    def test_train_dev_and_holdout_are_source_disjoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "dataset").mkdir()
+            sources = [{"source_id": str(i), "task_type": "QA"} for i in range(100)]
+            responses = [{"id": str(i), "source_id": str(i), "split": "train", "quality": "good",
+                          "labels": [] if i % 2 else [{}]} for i in range(100)]
+            for name, values in (("source_info.jsonl", sources), ("response.jsonl", responses)):
+                (root / "dataset" / name).write_text("\n".join(map(json.dumps, values)), encoding="utf-8")
+            dev = select_samples(root, 10, split="train", pool="dev")
+            holdout = select_samples(root, 10, split="train", pool="holdout")
+            self.assertFalse({s["source_id"] for s, _ in dev} & {s["source_id"] for s, _ in holdout})
+
     def test_adapter_never_exposes_gold_and_preserves_original_response(self):
         source = {"source_id": "42", "task_type": "QA", "source_info": {"question": "When?", "passages": "Founded in 2018."}}
         response = {"response": "Founded in 2018.", "labels": [{"text": "GOLD_MARKER"}], "model": "HIDDEN_MODEL"}

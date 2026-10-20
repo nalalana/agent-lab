@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--agent", choices=["native", "graph"], default="native")
     args = parser.parse_args()
     if args.limit < 1 or args.max_steps < 1:
         parser.error("limit/max-steps must be positive")
@@ -43,14 +44,25 @@ def main():
     tasks = get_tasks(args.domain, task_split_name=args.split, task_ids=args.task, num_tasks=args.limit)
     if not tasks:
         parser.error("No tasks selected")
-    plan = {"kind": "tau2_native_scaffold_reference_not_production_graph", "domain": args.domain,
+    plan = {"kind": "tau2_native_scaffold_reference_not_production_graph" if args.agent == "native" else "tau2_production_graph_external_execution_adapter", "domain": args.domain,
             "split": args.split, "task_ids": [t.id for t in tasks], "seed": args.seed, "max_steps": args.max_steps,
             "native_environment_and_evaluator": True, "official_score": False,
             "agent_user_judge_same_model": True}
+    if args.agent == "graph":
+        plan["adapter"] = {"graph": "production Phase2 topology with checkpoint pause/resume",
+            "execution": "native tau tools via external handoff; execute_tool node bypassed only for actual native execution",
+            "facts": "successful non-mutating READ tool results mapped to typed table evidence for verifier only",
+            "prompt": "native domain policy with adapter instructions", "memory": "disabled",
+            "per_user_turn_seconds": 120, "per_user_turn_tool_limit": 8,
+            "model_request_classifier": True, "model_response_verifier": True}
     if args.dry_run:
         print(json.dumps(plan, indent=2))
         return 0
     config = model_config()
+    if args.agent == "graph":
+        from tau2.registry import registry
+        from tau_graph_agent import create_graph_agent
+        registry.register_agent_factory(create_graph_agent, name="touming_graph")
     # Credentials stay in process environment, never inside serialized llm_args.
     os.environ["OPENAI_API_KEY"] = config["API_KEY"]
     os.environ["OPENAI_API_BASE"] = config["BASE_URL"]
@@ -61,13 +73,16 @@ def main():
     import tau2.evaluator.evaluator_nl_assertions as nl_evaluator
     nl_evaluator.DEFAULT_LLM_NL_ASSERTIONS = model
     nl_evaluator.DEFAULT_LLM_NL_ASSERTIONS_ARGS = llm_args
-    run_config = TextRunConfig(domain=args.domain, task_split_name=args.split, agent="llm_agent",
+    run_config = TextRunConfig(domain=args.domain, task_split_name=args.split,
+        agent="llm_agent" if args.agent == "native" else "touming_graph",
         llm_agent=model, llm_args_agent=llm_args, user="user_simulator", llm_user=model,
         llm_args_user=llm_args, num_trials=1, max_steps=args.max_steps, max_errors=5,
         seed=args.seed, max_concurrency=1, workers=0, timeout=180, auto_review=False,
         communicate_scoring=CommunicateScoring(judge=SemanticCommunicateSettings(model=model, model_args=llm_args)))
     output = args.output or ROOT / "lab/results" / ("tau2-native-" + uuid4().hex[:10])
     output.mkdir(parents=True, exist_ok=False)
+    if args.agent == "graph":
+        os.environ["AGENT_LAB_TAU_TRACE_DIR"] = str(output.resolve() / "graph_traces")
     plan.update({"model": config["MODEL"], "time": datetime.now(timezone.utc).isoformat(),
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
@@ -99,7 +114,7 @@ def main():
     summary = {"selected": len(records), "scored": len(scored), "errors": len(records) - len(scored),
         "reward_one": sum(r["reward"] == 1 for r in scored),
         "mean_reward": sum(r["reward"] for r in scored) / len(scored) if scored else None,
-        "kind": plan["kind"], "not_production_graph_score": True}
+        "kind": plan["kind"], "not_production_graph_score": args.agent == "native"}
     (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Report: {output}")
     return 0 if not summary["errors"] else 1
