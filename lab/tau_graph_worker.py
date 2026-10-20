@@ -44,12 +44,16 @@ class ReadEvidenceCache:
     def observe(self, receipt):
         if receipt["name"] not in self.read_names or receipt.get("success") is not True:
             return
+        try:
+            result = json.loads(receipt["content"])
+        except (ValueError, TypeError):
+            result = receipt["content"]
         key = (receipt["name"], json.dumps(receipt["arguments"], sort_keys=True))
         self.sources[key] = {"id": "historical_read:" + receipt["tool_call_id"],
             "kind": "table_content", "content": json.dumps({
                 "origin": "native_read_observation", "observed_turn": self.turn,
                 "tool_name": receipt["name"], "arguments": receipt["arguments"],
-                "result": receipt["content"]}, ensure_ascii=False)}
+                "result": result}, ensure_ascii=False, sort_keys=True)}
 
 
 class Engine:

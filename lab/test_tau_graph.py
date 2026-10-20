@@ -44,6 +44,7 @@ class GraphBridgeTests(unittest.TestCase):
         cache.observe({**receipt, "success": False, "content": "error"})
         source = next(iter(cache.sources.values()))
         self.assertEqual(json.loads(source["content"])["observed_turn"], 1)
+        self.assertIn('"value": 12', source["content"])
         data = {"sources": [source], "draft": "The value was 12."}
         claim = {"text": data["draft"], "kind": "company_fact", "evidence": [
             {"source_id": source["id"], "quote": "12"}]}
@@ -59,6 +60,47 @@ class GraphBridgeTests(unittest.TestCase):
         cache.observe({**receipt, "name": "write_value"})
         self.assertFalse(cache.sources)
         self.assertFalse(ReadEvidenceCache({"lookup"}).sources)
+
+    def test_real_graph_verifies_previous_turn_read_without_reexecuting_it(self):
+        class Gateway:
+            generated = 0
+            observed_inputs = []
+
+            async def stream(self, request):
+                if request.purpose == "request_classification":
+                    text = json.dumps({"route": "general"})
+                elif request.purpose == "response_verification":
+                    data = json.loads(request.messages[-1]["content"])
+                    self.observed_inputs.append(data)
+                    source = next(s for s in data["sources"] if s["id"].startswith("historical_read:"))
+                    text = json.dumps({"verdict": "supported", "issues": [], "claims": [
+                        {"text": "The value is 12.", "kind": "company_fact", "evidence": [
+                            {"source_id": source["id"], "quote": "12"}]}]})
+                elif self.generated == 0:
+                    self.generated += 1
+                    yield ModelEvent("tool_call_completed", {"name": "lookup", "id": "read-a", "arguments": {}})
+                    return
+                else:
+                    text = "The value is 12."
+                yield ModelEvent("text_delta", {"delta": text})
+
+        async def run():
+            gateway = Gateway()
+            engine = Engine({"tools": [{"type": "function", "function": {"name": "lookup", "parameters": {
+                "type": "object", "properties": {}, "additionalProperties": False}}}],
+                "read_names": ["lookup"], "policy": "Read values.", "carry_read_evidence": True},
+                {"MODEL": "scripted"}, gateway)
+            first = await engine.step({"kind": "user", "content": "Look up the value."})
+            self.assertEqual(first["kind"], "tool")
+            answer = await engine.step({"kind": "tool", "id": "read-a", "content": '{"value":12}'})
+            self.assertEqual(answer["kind"], "answer")
+            second = await engine.step({"kind": "user", "content": "Repeat the value."})
+            self.assertEqual(second, {"kind": "answer", "content": "The value is 12."})
+            self.assertEqual(len(engine.recorder.records), 1)
+            sources = gateway.observed_inputs[-1]["sources"]
+            self.assertFalse(any(s["kind"] == "tool_receipt" for s in sources))
+            self.assertEqual(sum(s["id"].startswith("historical_read:") for s in sources), 1)
+        asyncio.run(run())
 
     def test_model_failure_is_explicit_graph_terminal_state(self):
         class FailingGateway:
