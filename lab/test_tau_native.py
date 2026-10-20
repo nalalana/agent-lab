@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from tau_graph_agent import GraphAgent, create_graph_agent
+from operation_outcome import UNKNOWN_CODE, UNKNOWN_MESSAGE
 from tau2.data_model.message import AssistantMessage, UserMessage
 
 
@@ -14,6 +15,15 @@ class NativeBoundaryTests(unittest.TestCase):
         self.assertTrue(agent.is_stop(message))
         self.assertEqual(message.raw_data["graph_runtime_failure"]["status"], "FAILED")
         self.assertNotIn("success", message.content.lower())
+
+    def test_unknown_outcome_uses_fixed_uncertainty_text_and_stops(self):
+        agent = object.__new__(GraphAgent)
+        agent.exchange = lambda _: {"kind": "error", "status": "FAILED", "execution_outcome": "unknown",
+                                    "error": {"code": UNKNOWN_CODE, "message": "do not trust arbitrary content"}}
+        message, _ = agent.generate_next_message(UserMessage(role="user", content="Retry"), {})
+        self.assertEqual(message.content, UNKNOWN_MESSAGE)
+        self.assertTrue(agent.is_stop(message))
+        self.assertEqual(message.raw_data["graph_runtime_failure"]["execution_outcome"], "unknown")
 
     def test_tool_request_remains_real_tool_call_and_visible_history_is_preserved(self):
         agent = object.__new__(GraphAgent)

@@ -102,3 +102,11 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 先运行 `python lab/run_operation_eval.py --output lab/results/<新目录>`，比较原核验器与候选在18条人工构造诊断案例上的表现。案例含直接返回状态/金额、虚构字段、错误资源、业务拒绝、状态未变、超时未知、只读假装写入、后续状态冲突及结果注入；这是合成诊断，不是公开基准或整体安全性证明。`python lab/test_operation_eval.py` 检查显式启用及来源类型边界。
 
 操作归因提示候选已否决：[实验报告](experiments/2026-10-20-operation-attribution.md)。虽然预设18条诊断全部通过，补充反例出现超时被误认为“无副作用”的错误放行；tau2目标达成8→6。开关仅用于复现，保持默认关闭。
+
+### 未知写入结果停止实验
+
+`run_tau2.py --agent graph --carry-read-evidence --stop-on-unknown-operation --limit 10` 在原READ缓存配置上启用任务内硬停止，不启用已否决的归因提示。执行状态分为已返回returned（不代表业务成功）、执行前拒绝not_executed、可能有副作用但无确认unknown，以及只读失败read_failed。unknown由可信执行元数据判定，不解析工具文本作为授权或成功标志；一旦触发，原图进入FAILED/reconcile_tool，输出固定不确定提示，取消后续调用，拒绝同任务的新用户重试，不将其计为正常完成。
+
+`python lab/run_outcome_faults.py --output lab/results/<新目录>` 用真实模型、实际SQLite提交和人工注入的丢失回执比较开关两种配置。覆盖提交后超时、提交前超时、执行前拒绝、正常返回、业务拒绝和只读超时；不接触外部业务数据库。这是合成故障诊断，不是公开基准。`python lab/test_operation_outcome.py` 验证模型无法覆盖硬停止及已排队调用不会继续。
+
+边界：门闩只在当前worker任务内有效，尚无跨进程持久恢复、幂等业务状态查询或自动对账；会停止全部后续工具，而非自动恢复业务。仅作为默认关闭的实验，不能推广为生产级幂等保障。

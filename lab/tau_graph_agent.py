@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 
 from bootstrap import ROOT
+from operation_outcome import UNKNOWN_CODE, UNKNOWN_MESSAGE
 from tau2.agent.base_agent import HalfDuplexAgent, AgentError
 from tau2.data_model.message import AssistantMessage, ToolCall, MultiToolMessage, UserMessage
 
@@ -23,6 +24,7 @@ class GraphAgent(HalfDuplexAgent[dict]):
         try:
             reply = self.exchange({"kind": "init", "policy": domain_policy,
                 "tools": [t.openai_schema for t in tools], "read_names": read_names,
+                "stop_on_unknown_operation": os.environ.get("AGENT_LAB_TAU_STOP_UNKNOWN") == "1",
                 "attribute_operation_results": os.environ.get("AGENT_LAB_TAU_ATTRIBUTE_OPERATIONS") == "1",
                 "carry_read_evidence": os.environ.get("AGENT_LAB_TAU_CARRY_READS") == "1",
                 "trace_dir": os.environ.get("AGENT_LAB_TAU_TRACE_DIR")})
@@ -64,7 +66,8 @@ class GraphAgent(HalfDuplexAgent[dict]):
             reply = self.exchange({"kind": "tool", "id": tool.id, "content": tool.content,
                 "error": tool.error, "execution_status": tool.execution_status})
         if reply["kind"] == "error":
-            answer = AssistantMessage.text("The agent runtime stopped because this turn could not be verified or completed.",
+            content = UNKNOWN_MESSAGE if (reply.get("error") or {}).get("code") == UNKNOWN_CODE else "The agent runtime stopped because this turn could not be verified or completed."
+            answer = AssistantMessage.text(content,
                 raw_data={"graph_runtime_failure": reply})
         elif reply["kind"] == "tool":
             answer = AssistantMessage.text("", tool_calls=[ToolCall(id=reply["id"], name=reply["name"], arguments=reply["arguments"])])

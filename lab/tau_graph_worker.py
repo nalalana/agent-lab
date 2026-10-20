@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from bootstrap import setup
 from run_eval import EnvironmentCredentials, TracedGateway, model_config
+from operation_outcome import UNKNOWN_CODE, UNKNOWN_MESSAGE, execution_outcome
 
 
 def readonly_evidence(state, read_names, live_ids=None):
@@ -67,6 +68,9 @@ class Engine:
         from apps.agent_runtime.tools.registry import ToolRegistry, ToolRouter
         self.config, self.init = config, init
         self.history, self.active, self.context = [], False, {}
+        self.stop_on_unknown = bool(init.get("stop_on_unknown_operation"))
+        # ponytail: task-local latch; durable reconciliation is required before production use.
+        self.unresolved_reply = None
         self.trace_offset = 0
         self.trace_path = Path(init["trace_dir"]) / ("graph-" + uuid4().hex + ".jsonl") if init.get("trace_dir") else None
         schemas = init["tools"]
@@ -113,7 +117,8 @@ class Engine:
             metadata = {"kind": "adapter_metadata", "python": sys.version,
                 "dependencies": {name: version(name) for name in ("django", "langgraph", "openai")},
                 "read_names": sorted(self.read_names), "carry_read_evidence": cache is not None,
-                "attribute_operation_results": bool(init.get("attribute_operation_results")), "model": config["MODEL"]}
+                "attribute_operation_results": bool(init.get("attribute_operation_results")),
+                "stop_on_unknown_operation": self.stop_on_unknown, "model": config["MODEL"]}
             self.trace_path.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
 
     async def step(self, command):
@@ -125,6 +130,8 @@ class Engine:
             self.history = command["messages"]
             return {"kind": "ready"}
         if command["kind"] == "user":
+            if self.unresolved_reply is not None:
+                return self.unresolved_reply
             if self.active:
                 raise ValueError("New user turn before pending tool result")
             if self.evidence_cache is not None:
@@ -158,6 +165,12 @@ class Engine:
             receipt = {"tool_call_id": tool_id, "model_call_id": pending["id"], "name": pending["name"],
                 "arguments": pending["arguments"], "content": command.get("content") or "", "success": success,
                 "error_code": None if success else "TOOL_DENIED", "artifact_refs": []}
+            if self.stop_on_unknown:
+                receipt["execution_status"] = command.get("execution_status", "executed")
+                receipt["execution_outcome"] = execution_outcome(success=success,
+                    execution_status=receipt["execution_status"], may_mutate=pending["name"] not in self.read_names)
+                if receipt["execution_outcome"] == "unknown":
+                    receipt["error_code"] = UNKNOWN_CODE
             if self.evidence_cache is not None:
                 self.evidence_cache.observe(receipt)
             turn = {**state["pending_tool_turn"], "results": [*state["pending_tool_turn"]["results"], receipt]}
@@ -170,7 +183,15 @@ class Engine:
             if success:
                 self.recorder.completed(tool_call_id=tool_id)
             else:
-                self.recorder.failed(tool_call_id=tool_id, error_code="TOOL_DENIED")
+                self.recorder.failed(tool_call_id=tool_id, error_code=receipt["error_code"])
+            if receipt.get("execution_outcome") == "unknown":
+                from apps.agent_runtime.orchestration.events import fail_run
+                updates["request"] = state["request"]
+                updates["completed_tool_call_keys"] = set(state.get("completed_tool_call_keys", set()))
+                append_event(updates, "tool.outcome_unknown", {"tool_call_id": tool_id,
+                    "tool_name": pending["name"], "execution_outcome": "unknown", "automatic_retry_allowed": False})
+                fail_run(updates, code=UNKNOWN_CODE, message=UNKNOWN_MESSAGE,
+                    stage="reconcile_tool", retryable=False)
             await self.graph.aupdate_state(self.checkpoint, updates, as_node="execute_tool")
             state = await self.graph.ainvoke(None, self.checkpoint)
         else:
@@ -193,6 +214,10 @@ class Engine:
             reply = {"kind": "error", "status": state.get("status"),
                 "error": asdict(error) if error else None,
                 "events": [asdict(e) for e in state.get("events", [])[-2:]]}
+        if reply.get("error") and reply["error"].get("code") == UNKNOWN_CODE:
+            reply["execution_outcome"] = "unknown"
+            reply["automatic_retry_allowed"] = False
+            self.unresolved_reply = reply
         if self.trace_path:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             record = {"reply": reply, "model_calls": self.traced.calls[self.trace_offset:], "usage": state.get("usage", {})}

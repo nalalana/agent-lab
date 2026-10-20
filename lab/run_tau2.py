@@ -33,7 +33,11 @@ def main():
     parser.add_argument("--agent", choices=["native", "graph"], default="native")
     parser.add_argument("--carry-read-evidence", action="store_true", help="Experimental task-local read cache; retail graph only")
     parser.add_argument("--attribute-operation-results", action="store_true", help="Experimental receipt attribution prompt; requires read carry")
+    parser.add_argument("--stop-on-unknown-operation", action="store_true", help="Experimental task-local fail-stop for uncertain writes")
     args = parser.parse_args()
+    if args.stop_on_unknown_operation and (args.agent != "graph" or args.domain != "retail"):
+        parser.error("Unknown outcome gate requires --agent graph --domain retail")
+    os.environ["AGENT_LAB_TAU_STOP_UNKNOWN"] = "1" if args.stop_on_unknown_operation else "0"
     if args.attribute_operation_results and not args.carry_read_evidence:
         parser.error("Operation attribution requires --carry-read-evidence")
     os.environ["AGENT_LAB_TAU_ATTRIBUTE_OPERATIONS"] = "1" if args.attribute_operation_results else "0"
@@ -64,6 +68,7 @@ def main():
             "per_user_turn_seconds": 120, "per_user_turn_tool_limit": 8,
             "carry_read_evidence": args.carry_read_evidence,
             "attribute_operation_results": args.attribute_operation_results,
+            "stop_on_unknown_operation": args.stop_on_unknown_operation,
             "model_request_classifier": True, "model_response_verifier": True}
     if args.dry_run:
         print(json.dumps(plan, indent=2))
@@ -112,6 +117,9 @@ def main():
                 record.update({"simulation": result.model_dump(mode="json"),
                     "reward": result.reward_info.reward if result.reward_info else None,
                     "termination_reason": str(result.termination_reason)})
+                record["unknown_operation_outcome"] = any(
+                    ((getattr(m, "raw_data", None) or {}).get("graph_runtime_failure") or {}).get("execution_outcome") == "unknown"
+                    for m in result.messages)
                 record["graph_runtime_failed"] = any(bool((getattr(m, "raw_data", None) or {}).get("graph_runtime_failure"))
                                                      for m in result.messages)
             except Exception as exc:
@@ -127,6 +135,7 @@ def main():
         "reward_one": sum(r["reward"] == 1 for r in scored),
         "mean_reward": sum(r["reward"] for r in scored) / len(scored) if scored else None,
         "graph_runtime_failures": sum(bool(r.get("graph_runtime_failed")) for r in records),
+        "unknown_operation_outcomes": sum(bool(r.get("unknown_operation_outcome")) for r in records),
         "reliable_reward_one": sum(r["reward"] == 1 and not r.get("graph_runtime_failed") for r in records),
         "mean_reward_errors_zero": sum(r["reward"] or 0 for r in records) / len(records),
         "kind": plan["kind"], "not_production_graph_score": args.agent == "native"}
