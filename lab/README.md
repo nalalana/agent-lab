@@ -132,3 +132,5 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 `lab/legacy_write_guard.py` 仅为实验包装器：写前持久化unknown，未确认则不允许重试；已收到完整成功回执才缓存历史结果。它不为旧接口创造业务端幂等能力，未接入生产Executor；缺少权威操作查询时不提供自动解除门闩。
 
 补充诊断还执行存储客户端upsertToTable的原始重试方法：异常后会自动重试，最多10次；外层门闩不能阻止调用内部重试。该保护只覆盖外层重发，不能宣称端到端避免重复写入。
+
+正式6组诊断见[公司表格跨库边界报告](experiments/2026-10-20-table-write-boundary.md)。已复现远端提交后失败、部分写入及隐藏SDK重试；实验guard仅覆盖外层重发，尚未接入生产路径。
