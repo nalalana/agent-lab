@@ -100,3 +100,5 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 `run_tau2.py --agent graph --carry-read-evidence --attribute-operation-results --limit 10` 在跨轮READ缓存配置上，仅增加核验器的操作结果归因说明；默认关闭，不改变来源类型、工具执行或精确引用校验。真实回执中本次操作直接返回的字段按operation核验，不能替代普通company_fact来源，不能由调用成功推断银行到账、未来交付或未返回字段。
 
 先运行 `python lab/run_operation_eval.py --output lab/results/<新目录>`，比较原核验器与候选在18条人工构造诊断案例上的表现。案例含直接返回状态/金额、虚构字段、错误资源、业务拒绝、状态未变、超时未知、只读假装写入、后续状态冲突及结果注入；这是合成诊断，不是公开基准或整体安全性证明。`python lab/test_operation_eval.py` 检查显式启用及来源类型边界。
+
+操作归因提示候选已否决：[实验报告](experiments/2026-10-20-operation-attribution.md)。虽然预设18条诊断全部通过，补充反例出现超时被误认为“无副作用”的错误放行；tau2目标达成8→6。开关仅用于复现，保持默认关闭。
