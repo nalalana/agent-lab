@@ -12,11 +12,13 @@ from bootstrap import setup
 from run_eval import EnvironmentCredentials, TracedGateway, model_config
 
 
-def readonly_evidence(state, read_names):
+def readonly_evidence(state, read_names, live_ids=None):
     """Adapter-only aliases for actual successful, non-mutating benchmark reads."""
     results = list(state.get("tool_results", []))
     for result in state.get("tool_results", []):
         if result.get("name") not in read_names or result.get("success") is not True:
+            continue
+        if live_ids is not None and result["tool_call_id"] not in live_ids:
             continue
         try:
             data = json.loads(result["content"])
@@ -28,6 +30,26 @@ def readonly_evidence(state, read_names):
         results.append({"tool_call_id": tid + ":benchmark_read", "name": "company.table.read",
             "success": True, "arguments": {"tid": tid}, "content": json.dumps({"tid": tid, "data": data})})
     return {**state, "tool_results": results}
+
+
+class ReadEvidenceCache:
+    """Task-local observations; invalidate before every non-read dispatch."""
+    def __init__(self, read_names):
+        self.read_names, self.sources, self.turn = set(read_names), {}, 0
+
+    def dispatch(self, name):
+        if name not in self.read_names:
+            self.sources.clear()
+
+    def observe(self, receipt):
+        if receipt["name"] not in self.read_names or receipt.get("success") is not True:
+            return
+        key = (receipt["name"], json.dumps(receipt["arguments"], sort_keys=True))
+        self.sources[key] = {"id": "historical_read:" + receipt["tool_call_id"],
+            "kind": "table_content", "content": json.dumps({
+                "origin": "native_read_observation", "observed_turn": self.turn,
+                "tool_name": receipt["name"], "arguments": receipt["arguments"],
+                "result": receipt["content"]}, ensure_ascii=False)}
 
 
 class Engine:
@@ -47,6 +69,7 @@ class Engine:
         self.read_names = set(init["read_names"])
         if not self.read_names <= {t["function"]["name"] for t in schemas}:
             raise ValueError("Unregistered read tool")
+        self.evidence_cache = ReadEvidenceCache(self.read_names) if init.get("carry_read_evidence") else None
         registry = ToolRegistry()
         for tool in schemas:
             function = tool["function"]
@@ -55,12 +78,22 @@ class Engine:
                 description=function.get("description", ""), args_schema=function["parameters"]))
         self.traced = TracedGateway(gateway if gateway is not None else OpenAICompatibleModelGateway(
             credential_loader=EnvironmentCredentials(config), max_retries=0))
-        verifier = ModelResponseVerifier(self.traced)
+        cache = self.evidence_cache
+
+        class CachedVerifier(ModelResponseVerifier):
+            def build_input(self, state, draft):
+                data, images = super().build_input(state, draft)
+                # No tool_receipt source: prior observations cannot prove current actions.
+                data["sources"].extend(dict(source) for source in cache.sources.values())
+                return data, images
+
+        verifier = (CachedVerifier if cache is not None else ModelResponseVerifier)(self.traced)
         read_names = self.read_names
 
         class BenchmarkVerifier:
             async def verify(self, state, draft):
-                return await verifier.verify(readonly_evidence(state, read_names), draft)
+                live_ids = {s["id"].removeprefix("historical_read:") for s in cache.sources.values()} if cache is not None else None
+                return await verifier.verify(readonly_evidence(state, read_names, live_ids), draft)
 
         self.recorder = InMemoryToolCallRecorder()
         self.facade = Phase2AgentRuntimeFacade(self.traced, context_resolver=lambda _: self.context,
@@ -74,7 +107,7 @@ class Engine:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             metadata = {"kind": "adapter_metadata", "python": sys.version,
                 "dependencies": {name: version(name) for name in ("django", "langgraph", "openai")},
-                "read_names": sorted(self.read_names), "model": config["MODEL"]}
+                "read_names": sorted(self.read_names), "carry_read_evidence": cache is not None, "model": config["MODEL"]}
             self.trace_path.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
 
     async def step(self, command):
@@ -88,6 +121,8 @@ class Engine:
         if command["kind"] == "user":
             if self.active:
                 raise ValueError("New user turn before pending tool result")
+            if self.evidence_cache is not None:
+                self.evidence_cache.turn += 1
             content = command["content"]
             self.history.append({"role": "user", "content": content})
             system = ("You are a customer-service agent. Follow the supplied domain policy and the authorized tool schemas. "
@@ -117,6 +152,8 @@ class Engine:
             receipt = {"tool_call_id": tool_id, "model_call_id": pending["id"], "name": pending["name"],
                 "arguments": pending["arguments"], "content": command.get("content") or "", "success": success,
                 "error_code": None if success else "TOOL_DENIED", "artifact_refs": []}
+            if self.evidence_cache is not None:
+                self.evidence_cache.observe(receipt)
             turn = {**state["pending_tool_turn"], "results": [*state["pending_tool_turn"]["results"], receipt]}
             updates = {"tool_results": [*state.get("tool_results", []), receipt], "pending_tool_turn": turn,
                        "pending_tool_call": None, "status": "RUNNING", "run_id": state["run_id"],
@@ -135,6 +172,8 @@ class Engine:
         if state.get("status") == "WAITING_TOOL":
             pending = state["pending_tool_call"]
             self.active = True
+            if self.evidence_cache is not None:
+                self.evidence_cache.dispatch(pending["name"])
             reply = {"kind": "tool", "id": pending["id"], "name": pending["name"], "arguments": pending["arguments"]}
             self.history.append({"role": "assistant", "content": "", "tool_calls": [{"id": pending["id"],
                 "type": "function", "function": {"name": pending["name"], "arguments": json.dumps(pending["arguments"])}}]})

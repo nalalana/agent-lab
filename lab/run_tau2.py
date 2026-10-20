@@ -31,7 +31,11 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--agent", choices=["native", "graph"], default="native")
+    parser.add_argument("--carry-read-evidence", action="store_true", help="Experimental task-local read cache; retail graph only")
     args = parser.parse_args()
+    if args.carry_read_evidence and (args.agent != "graph" or args.domain != "retail"):
+        parser.error("Read carry experiment requires --agent graph --domain retail")
+    os.environ["AGENT_LAB_TAU_CARRY_READS"] = "1" if args.carry_read_evidence else "0"
     if args.limit < 1 or args.max_steps < 1:
         parser.error("limit/max-steps must be positive")
     os.environ["TAU2_DATA_DIR"] = str(DATASET / "data")
@@ -54,6 +58,7 @@ def main():
             "facts": "successful non-mutating READ tool results mapped to typed table evidence for verifier only",
             "prompt": "native domain policy with adapter instructions", "memory": "disabled",
             "per_user_turn_seconds": 120, "per_user_turn_tool_limit": 8,
+            "carry_read_evidence": args.carry_read_evidence,
             "model_request_classifier": True, "model_response_verifier": True}
     if args.dry_run:
         print(json.dumps(plan, indent=2))

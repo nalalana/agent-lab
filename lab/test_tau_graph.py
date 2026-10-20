@@ -4,7 +4,7 @@ import unittest
 
 from bootstrap import setup
 setup()
-from tau_graph_worker import Engine, readonly_evidence
+from tau_graph_worker import Engine, ReadEvidenceCache, readonly_evidence
 from apps.agent_runtime.contracts import ModelEvent
 
 
@@ -31,6 +31,35 @@ class ScriptedGateway:
 
 
 class GraphBridgeTests(unittest.TestCase):
+    def test_historical_reads_are_facts_not_operation_receipts_and_expire(self):
+        from apps.agent_runtime.response_verification import validate_verdict
+        cache = ReadEvidenceCache({"lookup"})
+        cache.turn = 1
+        receipt = {"name": "lookup", "arguments": {"id": "a"}, "success": True,
+                   "tool_call_id": "observed", "content": '{"value":12}'}
+        cache.observe(receipt)
+        cache.turn = 2
+        cache.dispatch("lookup")
+        self.assertEqual(len(cache.sources), 1)
+        cache.observe({**receipt, "success": False, "content": "error"})
+        source = next(iter(cache.sources.values()))
+        self.assertEqual(json.loads(source["content"])["observed_turn"], 1)
+        data = {"sources": [source], "draft": "The value was 12."}
+        claim = {"text": data["draft"], "kind": "company_fact", "evidence": [
+            {"source_id": source["id"], "quote": "12"}]}
+        verdict = {"verdict": "supported", "issues": [], "claims": [claim]}
+        validate_verdict(json.dumps(verdict), data)
+        claim["kind"] = "operation"
+        with self.assertRaises(ValueError):
+            validate_verdict(json.dumps(verdict), data)
+        cache.dispatch("write_value")  # Before execution, even if it later fails.
+        self.assertFalse(cache.sources)
+        adapted = readonly_evidence({"tool_results": [receipt]}, {"lookup"}, set())
+        self.assertEqual(adapted["tool_results"], [receipt])
+        cache.observe({**receipt, "name": "write_value"})
+        self.assertFalse(cache.sources)
+        self.assertFalse(ReadEvidenceCache({"lookup"}).sources)
+
     def test_model_failure_is_explicit_graph_terminal_state(self):
         class FailingGateway:
             async def stream(self, request):

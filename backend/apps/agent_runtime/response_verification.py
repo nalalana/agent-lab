@@ -218,11 +218,13 @@ def validate_verdict(raw: str, data: dict, usage=None) -> VerificationResult:
 
 
 class ModelResponseVerifier:
+    build_input = staticmethod(verification_input)
+
     def __init__(self, model_gateway):
         self.model_gateway = model_gateway
 
     async def verify(self, state, draft: str) -> VerificationResult:
-        data, images = verification_input(state, draft)
+        data, images = self.build_input(state, draft)
         config = state["config"]
         content = [{"type": "text", "text": _json(data)}, *images] if images else _json(data)
         request = ModelRequest(

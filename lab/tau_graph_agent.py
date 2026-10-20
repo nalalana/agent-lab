@@ -23,6 +23,7 @@ class GraphAgent(HalfDuplexAgent[dict]):
         try:
             reply = self.exchange({"kind": "init", "policy": domain_policy,
                 "tools": [t.openai_schema for t in tools], "read_names": read_names,
+                "carry_read_evidence": os.environ.get("AGENT_LAB_TAU_CARRY_READS") == "1",
                 "trace_dir": os.environ.get("AGENT_LAB_TAU_TRACE_DIR")})
         except Exception:
             self.stop()
