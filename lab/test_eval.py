@@ -17,16 +17,23 @@ from apps.agent_runtime.tools.registry import ToolRouter
 
 
 class ScriptedModel:
-    def __init__(self, tool="company.table.read", arguments=None):
+    def __init__(self, tool="company.table.read", arguments=None, typed_evidence=False):
         self.generated = False
         self.tool = tool
         self.arguments = arguments or {"tid": "stats"}
+        self.typed_evidence = typed_evidence
 
     async def stream(self, request):
         if request.purpose == "request_classification":
             text = json.dumps({"route": "general"})
         elif request.purpose == "response_verification":
-            text = json.dumps({"verdict": "supported", "issues": [], "claims": []})
+            claims = []
+            if self.typed_evidence:
+                data = json.loads(request.messages[-1]["content"])
+                source = next(s for s in data["sources"] if s["kind"] == "table_content")
+                claims = [{"text": "在职人数为12。", "kind": "company_fact",
+                           "evidence": [{"source_id": source["id"], "quote": "12"}]}]
+            text = json.dumps({"verdict": "supported", "issues": [], "claims": claims})
         elif not self.generated:
             self.generated = True
             yield ModelEvent("tool_call_completed", {"id": "call-1", "name": self.tool,
@@ -42,7 +49,7 @@ class ScriptedModel:
 class EvaluationHarnessTests(unittest.TestCase):
     def test_real_graph_tool_and_verifier_are_wired(self):
         case = load_cases(ROOT / "lab/cases/business.jsonl")[0]
-        result = asyncio.run(run_case(case, {"MODEL": "scripted"}, 10, ScriptedModel()))
+        result = asyncio.run(run_case(case, {"MODEL": "scripted"}, 10, ScriptedModel(typed_evidence=True)))
         self.assertEqual(result["status"], "COMPLETED")
         self.assertNotIn("properties", sys.modules)
         self.assertTrue(result["grade"]["passed"], result)
