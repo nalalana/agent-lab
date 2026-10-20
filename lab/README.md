@@ -94,3 +94,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 此实验只改变核验器可用证据，生成模型仍使用相同可见对话历史；不改核验提示词或裁决规则。核验器新增可覆盖的 `build_input` 方法，默认仍使用原有来源构造器。结果必须与相同任务的基线分别报告，不能作为生产环境缓存一致性证明。
 
 首轮实验结果见 [跨轮证据报告](experiments/2026-10-20-read-evidence-lifecycle.md)：同组10条目标达成3→8，正常完成2→5，仍有5条核验终止；默认保持关闭。
+
+### 操作结果归因实验
+
+`run_tau2.py --agent graph --carry-read-evidence --attribute-operation-results --limit 10` 在跨轮READ缓存配置上，仅增加核验器的操作结果归因说明；默认关闭，不改变来源类型、工具执行或精确引用校验。真实回执中本次操作直接返回的字段按operation核验，不能替代普通company_fact来源，不能由调用成功推断银行到账、未来交付或未返回字段。
+
+先运行 `python lab/run_operation_eval.py --output lab/results/<新目录>`，比较原核验器与候选在18条人工构造诊断案例上的表现。案例含直接返回状态/金额、虚构字段、错误资源、业务拒绝、状态未变、超时未知、只读假装写入、后续状态冲突及结果注入；这是合成诊断，不是公开基准或整体安全性证明。`python lab/test_operation_eval.py` 检查显式启用及来源类型边界。

@@ -220,8 +220,9 @@ def validate_verdict(raw: str, data: dict, usage=None) -> VerificationResult:
 class ModelResponseVerifier:
     build_input = staticmethod(verification_input)
 
-    def __init__(self, model_gateway):
+    def __init__(self, model_gateway, *, prompt_suffix=""):
         self.model_gateway = model_gateway
+        self.prompt_suffix = prompt_suffix
 
     async def verify(self, state, draft: str) -> VerificationResult:
         data, images = self.build_input(state, draft)
@@ -229,7 +230,7 @@ class ModelResponseVerifier:
         content = [{"type": "text", "text": _json(data)}, *images] if images else _json(data)
         request = ModelRequest(
             run_id=state["run_id"], provider=config["model_provider"], model=config["model_name"],
-            messages=[{"role": "system", "content": VERIFICATION_PROMPT}, {"role": "user", "content": content}],
+            messages=[{"role": "system", "content": VERIFICATION_PROMPT + self.prompt_suffix}, {"role": "user", "content": content}],
             tools=[], temperature=0, max_output_tokens=4096, response_format={"type": "json_schema", "json_schema": {"name": "response_verification", "strict": True, "schema": VERIFICATION_SCHEMA}},
             timeout_seconds=max(1, int(state.get("max_execution_seconds") or 60)), credential_ref=config["credential_ref"],
             purpose="response_verification",

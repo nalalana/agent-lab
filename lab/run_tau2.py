@@ -32,7 +32,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--agent", choices=["native", "graph"], default="native")
     parser.add_argument("--carry-read-evidence", action="store_true", help="Experimental task-local read cache; retail graph only")
+    parser.add_argument("--attribute-operation-results", action="store_true", help="Experimental receipt attribution prompt; requires read carry")
     args = parser.parse_args()
+    if args.attribute_operation_results and not args.carry_read_evidence:
+        parser.error("Operation attribution requires --carry-read-evidence")
+    os.environ["AGENT_LAB_TAU_ATTRIBUTE_OPERATIONS"] = "1" if args.attribute_operation_results else "0"
     if args.carry_read_evidence and (args.agent != "graph" or args.domain != "retail"):
         parser.error("Read carry experiment requires --agent graph --domain retail")
     os.environ["AGENT_LAB_TAU_CARRY_READS"] = "1" if args.carry_read_evidence else "0"
@@ -59,6 +63,7 @@ def main():
             "prompt": "native domain policy with adapter instructions", "memory": "disabled",
             "per_user_turn_seconds": 120, "per_user_turn_tool_limit": 8,
             "carry_read_evidence": args.carry_read_evidence,
+            "attribute_operation_results": args.attribute_operation_results,
             "model_request_classifier": True, "model_response_verifier": True}
     if args.dry_run:
         print(json.dumps(plan, indent=2))

@@ -91,7 +91,8 @@ class Engine:
                 data["sources"].extend(dict(source) for source in cache.sources.values())
                 return data, images
 
-        verifier = (CachedVerifier if cache is not None else ModelResponseVerifier)(self.traced)
+        suffix = (Path(__file__).parent / "prompts/operation-attribution.txt").read_text(encoding="utf-8") if init.get("attribute_operation_results") else ""
+        verifier = (CachedVerifier if cache is not None else ModelResponseVerifier)(self.traced, prompt_suffix=suffix)
         read_names = self.read_names
 
         class BenchmarkVerifier:
@@ -111,7 +112,8 @@ class Engine:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             metadata = {"kind": "adapter_metadata", "python": sys.version,
                 "dependencies": {name: version(name) for name in ("django", "langgraph", "openai")},
-                "read_names": sorted(self.read_names), "carry_read_evidence": cache is not None, "model": config["MODEL"]}
+                "read_names": sorted(self.read_names), "carry_read_evidence": cache is not None,
+                "attribute_operation_results": bool(init.get("attribute_operation_results")), "model": config["MODEL"]}
             self.trace_path.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
 
     async def step(self, command):
