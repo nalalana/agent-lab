@@ -122,3 +122,11 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 这是受控后端合同验证，未接入原生tau2工具或生产数据库；未实现完整LangGraph检查点恢复、平台IAM或任意第三方工具的幂等。操作ID只有在可信调用方跨会话保持同一逻辑intent时才有效，不能自动识别用户换个说法重复提出的请求。
 
 首轮结果：[持久操作恢复报告](experiments/2026-10-20-durable-operation-recovery.md)。5组跨进程/并发流程检查通过，2条真实模型恢复任务正常完成且未写入业务；仅验证受控SQLite合同，未恢复整个平台执行流程。
+
+### 真实表格源码的跨库边界诊断
+
+`python lab/run_table_boundary.py --output lab/results/<新目录>` 从当前后端源码提取未改写的upsert_table_cells及其版本/审计辅助函数，配合真实Django ORM与独立SQLite远端替身运行。IAM和内容审核使用允许夹具，未导入生产配置，未连接真实immudb，不是整个平台集成或PostgreSQL锁测试。
+
+源码显示单元格存于immudb，审计/版本位于Django数据库；本地atomic不能回滚远端提交。诊断覆盖响应丢失后的审计回滚、多单元格部分成功、盲重试覆盖中间写入、持久unknown阻断、新意图不能绕过同任务门闩、已确认回执重放前重新授权及保留原版本的冲突检查。
+
+`lab/legacy_write_guard.py` 仅为实验包装器：写前持久化unknown，未确认则不允许重试；已收到完整成功回执才缓存历史结果。它不为旧接口创造业务端幂等能力，未接入生产Executor；缺少权威操作查询时不提供自动解除门闩。
