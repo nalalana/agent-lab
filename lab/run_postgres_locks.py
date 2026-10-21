@@ -13,17 +13,24 @@ from uuid import uuid4
 from bootstrap import ROOT, setup
 
 
-def config():
-    if os.environ.get("AGENT_LAB_PG_ENABLED") != "1":
-        raise ValueError("Set AGENT_LAB_PG_ENABLED=1 for the dedicated local agent_lab_test database")
-    password = os.environ.get("AGENT_LAB_PG_PASSWORD")
+def config(path=None):
+    values = dict(os.environ)
+    if path is not None:
+        values.update(json.loads(Path(path).read_text(encoding="utf-8-sig")))
+    if values.get("AGENT_LAB_PG_ENABLED") != "1":
+        raise ValueError("Set AGENT_LAB_PG_ENABLED=1 for an explicitly configured test database")
+    password = values.get("AGENT_LAB_PG_PASSWORD")
     if not password:
         raise ValueError("Missing AGENT_LAB_PG_PASSWORD")
-    port = int(os.environ.get("AGENT_LAB_PG_PORT", "55432"))
+    port = int(values.get("AGENT_LAB_PG_PORT", "55432"))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid AGENT_LAB_PG_PORT")
-    return {"dbname": "agent_lab_test", "user": "agent_lab_test", "password": password,
-            "host": "127.0.0.1", "port": port, "connect_timeout": 3}
+    database = values.get("AGENT_LAB_PG_DATABASE", "agent_lab_test")
+    if database != "agent_lab_test" and not database.startswith("test_"):
+        raise ValueError("An explicitly named test database is required")
+    return {"dbname": database, "user": values.get("AGENT_LAB_PG_USER", "agent_lab_test"), "password": password,
+            "host": values.get("AGENT_LAB_PG_HOST", "127.0.0.1"), "port": port,
+            "connect_timeout": 5, "sslmode": "require"}
 
 
 def require(condition, message):
@@ -31,7 +38,7 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def run(output):
+def run(output, config_path=None):
     output.mkdir(parents=True, exist_ok=False)
     summary = {"status": "unavailable", "checks_passed": 0, "model_calls": 0,
                "real_immudb": False, "postgresql_lock_behavior_tested": False}
@@ -40,7 +47,7 @@ def run(output):
     created = False
     try:
         try:
-            cfg = config()
+            cfg = config(config_path)
         except (ValueError, TypeError) as exc:
             summary["reason"] = str(exc)
             return 2
@@ -49,7 +56,7 @@ def run(output):
         try:
             control = psycopg2.connect(**cfg)
         except psycopg2.Error:
-            summary["reason"] = "Dedicated local PostgreSQL connection unavailable; no fallback used"
+            summary["reason"] = "Configured test PostgreSQL connection unavailable; no fallback used"
             return 2
         control.autocommit = True
         with control.cursor() as cursor:
@@ -57,7 +64,7 @@ def run(output):
         created = True
         setup({"ENGINE": "django.db.backends.postgresql", "NAME": cfg["dbname"],
             "USER": cfg["user"], "PASSWORD": cfg["password"], "HOST": cfg["host"], "PORT": cfg["port"],
-            "OPTIONS": {"connect_timeout": 3,
+            "OPTIONS": {"connect_timeout": 5, "sslmode": cfg["sslmode"],
                 "options": f"-c search_path={schema} -c lock_timeout=5000 -c statement_timeout=10000"}})
         from django.db import connection, connections
         from apps.opengate.models import Gates, GatesTable, APIKey, TableAuditEvent
@@ -163,4 +170,6 @@ def run(output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    raise SystemExit(run(parser.parse_args().output.resolve()))
+    parser.add_argument("--config", type=Path, help="Explicit local JSON configuration; never committed")
+    args = parser.parse_args()
+    raise SystemExit(run(args.output.resolve(), args.config))

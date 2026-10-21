@@ -166,3 +166,5 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 入口通过原源码方法与真实Django ORM检查写入/清空两个顺序的竞争，查询pg_stat_activity确认等待锁，放行后要求等待方拒绝旧版本且未调用远端。远端仍为SQLite替身、IAM和审核为允许夹具，不能称为完整immudb集成。连接或配置缺失返回unavailable且退出非零，不回退SQLite；仅通过真实锁场景才设置postgresql_lock_behavior_tested=true。
 
 当前机器未发现Docker/Podman/PostgreSQL服务或专用测试配置，真实锁场景尚未运行。`python lab/test_postgres_runner.py` 的3项检查只验证缺配置和连接失败时不回退、不暴露密码；不能算作PostgreSQL并发验证。
+
+后续支持显式云测试配置：`python lab/run_postgres_locks.py --config lab/.postgres.local.json --output lab/results/<新目录>`。JSON键使用AGENT_LAB_PG_ENABLED、PASSWORD、HOST、PORT、DATABASE、USER的完整AGENT_LAB_PG_前缀；本地文件已忽略。数据库须为agent_lab_test或test_开头，连接强制TLS require（不代表已校验证书主机名），默认连接仍为本机。当前用户提供的云测试实例TCP连接超时，未登录、未建schema；实际并发验证仍待网络放通。新增配置检查共4项，不是数据库测试成绩。

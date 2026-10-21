@@ -90,3 +90,4 @@ dist/
 *.bak
 *.bak.*
 backend/.env.dev
+/lab/.postgres.local.json
