@@ -102,6 +102,8 @@ class DjangoWorkspaceBackendToolExecutor(BackendToolExecutor):
                 )(request, context)
             except UnconfirmedWriteError as exc:
                 return _failure(str(exc), exc.code)
+            except ToolExecutionError:
+                raise
             except ProjectTablePermissionDenied as exc:
                 return _failure(str(exc), ErrorCode.TOOL_DENIED)
             except (ValueError, FileNotFoundError) as exc:

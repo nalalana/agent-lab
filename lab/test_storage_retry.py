@@ -73,7 +73,7 @@ class StorageRetryTests(unittest.TestCase):
                 body.append(node)
         def unconfirmed(*_):
             raise UnconfirmedWriteError()
-        namespace = {"json": json, "ToolResult": ToolResult, "UnconfirmedWriteError": UnconfirmedWriteError,
+        namespace = {"json": json, "ToolResult": ToolResult, "UnconfirmedWriteError": UnconfirmedWriteError, "ToolExecutionError": ToolExecutionError,
             "PROJECT_TABLE_TOOLS": {"company.table.write"}, "sync_to_async": sync_to_async,
             "execute_project_table_tool": unconfirmed}
         exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
@@ -98,12 +98,13 @@ class StorageRetryTests(unittest.TestCase):
             "GatesTable": SimpleNamespace(objects=manager), "Gates": SimpleNamespace(LABEL_COMPANY=1),
             "Resource": SimpleNamespace(TYPE_TABLE="table"), "_resource": lambda *_: object(),
             "runtime_action_allowed": lambda *_: True, "OpenGateService": service,
-            "UnconfirmedWriteError": UnconfirmedWriteError}
+            "UnconfirmedWriteError": UnconfirmedWriteError, "ToolExecutionError": ToolExecutionError,
+            "TableWriteConflict": type("TableWriteConflict", (Exception,), {})}
         exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
         execute = namespace["execute_project_table_tool"]
         for name in ("company.table.write", "company.table.clear_cells"):
             with self.assertRaises(UnconfirmedWriteError):
-                execute(ToolRequest(name, {"tid": "t", "cells": [{"r": 0, "c": 0, "value": 1}]}, 5), None)
+                execute(ToolRequest(name, {"tid": "t", "cells": [{"r": 0, "c": 0, "value": 1}]}, 5), SimpleNamespace(expected_table_version=0))
         before = service.upsert_table_cells.call_count
         with self.assertRaises(ValueError):
             execute(ToolRequest("company.table.write", {"tid": "t", "cells": []}, 5), None)

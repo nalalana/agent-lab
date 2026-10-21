@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import time
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -400,6 +401,9 @@ class Phase2Nodes(Phase1Nodes):
         definition = pending["definition"]
         request = pending["request"]
         context = pending["context"]
+        if request.name == "company.table.write":
+            context = replace(context, expected_table_version=_table_read_version(
+                state.get("tool_results") or [], str(request.arguments.get("tid") or "").strip()))
         started = time.monotonic()
         try:
             if definition.executor == "backend":
@@ -559,6 +563,27 @@ async def _call_recorder(method, **kwargs) -> None:
     result = method(**kwargs)
     if inspect.isawaitable(result):
         await result
+
+
+def _table_read_version(results: list[dict[str, Any]], tid: str) -> int | None:
+    """Use only this run's latest matching receipt, never model-supplied versions."""
+    for result in reversed(results):
+        name = result.get("name")
+        if name not in {"company.table.read", "company.table.write", "company.table.clear_cells"}:
+            continue
+        if str((result.get("arguments") or {}).get("tid") or "").strip() != tid:
+            continue
+        if name != "company.table.read" or not result.get("success"):
+            return None
+        try:
+            payload = json.loads(result["content"])
+            if payload.get("tid") != tid or payload.get("tool_name") != name:
+                return None
+            version = payload["data"]["table_version"]
+            return version if type(version) is int and version >= 0 else None
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+    return None
 
 
 def _grounding_policy(state: AgentState) -> dict[str, Any]:

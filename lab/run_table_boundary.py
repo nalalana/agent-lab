@@ -207,6 +207,10 @@ else: raise AssertionError('retry accepted')
         return {"remote_calls": remote.calls, "historical_receipt_replayed": True, "revocation_and_payload_conflict_blocked": True}
 
     def stale_version():
+        from test_table_versions import project_adapter, read_receipt
+        from apps.agent_runtime.contracts import ToolContext, ToolRequest
+        from apps.agent_runtime.orchestration.tool_nodes import _table_read_version
+        from apps.agent_runtime.tools.executors import ToolExecutionError
         t = table("version-boundary")
         remote = RemoteFixture(output / "remote.sqlite")
         writer = load_writer(remote)
@@ -222,7 +226,24 @@ else: raise AssertionError('retry accepted')
         else:
             raise AssertionError("Stale version was accepted")
         assert remote.calls == calls and remote.values(t.tid)[0]["value"] == "200"
-        return {"original_version_rejected_after_intervening_write": True, "intervening_value_preserved": 200}
+        execute = project_adapter(writer, t, writer.upsert_table_cells.__globals__["TableWriteConflict"], user)
+        version = _table_read_version([read_receipt(original["table_version"], t.tid)], t.tid)
+        context = ToolContext("r", "call", "c", "a", "u", frozenset(), version)
+        request = ToolRequest("company.table.write", {"tid": t.tid, "cells": cells}, 5)
+        try:
+            execute(request, context)
+        except ToolExecutionError as exc:
+            assert exc.code == "TABLE_WRITE_CONFLICT" and not exc.retryable
+        else:
+            raise AssertionError("Agent adapter overwrote an intervening write")
+        assert remote.calls == calls and remote.values(t.tid)[0]["value"] == "200"
+        from dataclasses import replace
+        latest = writer.upsert_table_cells.__globals__["_table_version"](t)
+        assert execute(request, replace(context, expected_table_version=latest))["updated_cells"] == 1
+        assert remote.calls == calls + 1 and remote.values(t.tid)[0]["value"] == "100"
+        return {"original_version_rejected_after_intervening_write": True,
+                "agent_adapter_conflict_before_remote_call": True,
+                "fresh_read_version_allows_authorized_write": True}
 
     def hidden_client_retry():
         tree = ast.parse(CLIENT_SOURCE.read_text(encoding="utf-8"))

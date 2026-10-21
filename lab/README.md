@@ -142,3 +142,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 `python lab/test_storage_retry.py` 验证实际SDK方法、异常/回执形态、读取重试及原图终止；`python -O lab/test_storage_retry.py` 验证确认检查不依赖assert。`run_table_boundary.py` 现在验证修改后的源码，昨日原始重试复现保留在原结果目录及报告中。仅修改agent-lab快照，尚无真实immudb/PostgreSQL验证或生产回迁；insertToTable等其他写接口的重试不在本次修复范围。
 
 结果见[存储写入重试修正报告](experiments/2026-10-21-storage-write-retry.md)：113项本地检查、7组源码边界检查通过；应用层upsert未知时不再重发，原执行图停止后续调用。仅修改实验仓库快照，跨库原子性与跨run幂等仍待解决。
+
+### 读取版本绑定写入（2026-10-21）
+
+实验快照中 `company.table.write` 必须有当前run内最近一次成功读取目标表的版本。执行图从真实工具回执提取table_version，通过ToolContext传给现有OpenGate乐观校验，不接受模型参数中的版本；缺少读取返回TABLE_READ_REQUIRED，并发版本变化返回TABLE_WRITE_CONFLICT且未发起远端写入。写入/清空尝试或读取失败后，旧读取不再可用于下一次写入；重新读取才可继续。仅table.write接入，clear_cells自身尚无同等版本保护。
+
+运行 `python lab/test_table_versions.py` 和 `python lab/run_table_boundary.py --output lab/results/<新目录>`。这是本地合同与替身远端诊断，不代表真实数据库或模型成绩；整表版本可能因其他单元格变动而冲突，绕过审计的写入无法被该版本检测。

@@ -8,11 +8,12 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.agent_runtime.contracts import ToolContext, ToolRequest
+from apps.agent_runtime.tools.executors import ToolExecutionError
 from apps.company.models import Company, TransparentCompanyAgentDefinition
 from apps.iam.models import Grant, Resource, Tenant
 from apps.iam.services import runtime_action_allowed
 from apps.opengate.models import Gates, GatesTable
-from apps.opengate.services import OpenGateService
+from apps.opengate.services import OpenGateService, TableWriteConflict
 from common.immudbIO.errors import UnconfirmedWriteError
 from apps.user.models import User
 
@@ -311,11 +312,20 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             value = cell["value"]
             if value is not None and not isinstance(value, (str, int, float, bool)):
                 raise ValueError("单元格 value 仅支持文本、数字、布尔值或空值")
-        ok, message = OpenGateService.upsert_table_cells(
-            user=user,
-            table=table,
-            cells=cells,
-        )
+        version = context.expected_table_version
+        if type(version) is not int or version < 0:
+            raise ToolExecutionError(code="TABLE_READ_REQUIRED",
+                message="请先读取目标表格，再根据读取结果提交写入。", retryable=False)
+        try:
+            ok, message = OpenGateService.upsert_table_cells(
+                user=user,
+                table=table,
+                cells=cells,
+                expected_table_version=version,
+            )
+        except TableWriteConflict as exc:
+            raise ToolExecutionError(code=exc.code,
+                message="表格已发生变化，本次写入未执行；请重新读取并核对修改。", retryable=False) from exc
         if not ok:
             # Legacy False can mean partial remote effects, not "nothing happened".
             raise UnconfirmedWriteError()

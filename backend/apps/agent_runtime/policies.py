@@ -7,6 +7,7 @@ PROJECT_TABLE_WRITE_POLICY = (
 )
 
 PROJECT_TABLE_ACTION_INSTRUCTION = (
+    "调用 company.table.write 前必须先调用 company.table.read；每次写入后再次修改前需重新读取。版本冲突时重新读取并核对用户意图，不能原样重试。"
     "本轮请求包含公司项目表格数据操作。只处理用户明确提出的表格任务，并保留同一请求中的其他任务。"
     "如需识别目标表，先调用 company.project_tables.list；如需确定行列、当前值或上下文，调用 company.table.read。"
     "用户要求新增、修改或清空单元格时，若目标表、单元格和值明确且当前权限允许，必须调用相应表格工具完成；不得只口头承诺或在没有成功回执时声称完成。"

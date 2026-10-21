@@ -113,6 +113,7 @@ class ToolContext:
     agent_id: object
     user_id: object | None
     permissions: frozenset[str]
+    expected_table_version: int | None = None
 
 
 @dataclass(frozen=True)
