@@ -148,3 +148,5 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 实验快照中 `company.table.write` 必须有当前run内最近一次成功读取目标表的版本。执行图从真实工具回执提取table_version，通过ToolContext传给现有OpenGate乐观校验，不接受模型参数中的版本；缺少读取返回TABLE_READ_REQUIRED，并发版本变化返回TABLE_WRITE_CONFLICT且未发起远端写入。写入/清空尝试或读取失败后，旧读取不再可用于下一次写入；重新读取才可继续。仅table.write接入，clear_cells自身尚无同等版本保护。
 
 运行 `python lab/test_table_versions.py` 和 `python lab/run_table_boundary.py --output lab/results/<新目录>`。这是本地合同与替身远端诊断，不代表真实数据库或模型成绩；整表版本可能因其他单元格变动而冲突，绕过审计的写入无法被该版本检测。
+
+结果见[读取版本绑定报告](experiments/2026-10-21-trusted-read-version.md)：117项本地检查、7组边界检查通过，无新增真实模型成绩。
