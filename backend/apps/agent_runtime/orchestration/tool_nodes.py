@@ -401,7 +401,7 @@ class Phase2Nodes(Phase1Nodes):
         definition = pending["definition"]
         request = pending["request"]
         context = pending["context"]
-        if request.name == "company.table.write":
+        if request.name in {"company.table.write", "company.table.clear_cells"}:
             context = replace(context, expected_table_version=_table_read_version(
                 state.get("tool_results") or [], str(request.arguments.get("tid") or "").strip()))
         started = time.monotonic()

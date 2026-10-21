@@ -37,6 +37,32 @@ def read_receipt(version=3, tid="t"):
 
 
 class TableVersionTests(unittest.TestCase):
+    def test_clear_requires_trusted_version_through_graph_and_adapter(self):
+        service = SimpleNamespace(clear_table_cells=Mock(return_value=(True, 1)))
+        adapter = project_adapter(service, SimpleNamespace(tid="t", num_columns=2), RuntimeError)
+        class Executor(BackendToolExecutor):
+            async def execute(self, definition, request, context):
+                return ToolResult(True, json.dumps(adapter(request, context)), (), None, False)
+        nodes = Phase2Nodes(None, backend_executor=Executor())
+        state = {"status": "RUNNING", "run_id": "r", "tool_results": []}
+        def dispatch():
+            arguments = {"tid": "t", "cells": [{"r": 0, "c": 0}], "expected_table_version": 999}
+            state["pending_tool_call"] = {"name": "company.table.clear_cells", "id": "clear", "dedupe_key": "clear",
+                "arguments": arguments, "definition": SimpleNamespace(executor="backend"),
+                "request": ToolRequest("company.table.clear_cells", arguments, 5),
+                "context": ToolContext("r", "clear", "c", "a", "u", frozenset(), 999)}
+            asyncio.run(nodes.execute_tool(state))
+        dispatch()
+        self.assertEqual(state["tool_results"][-1]["error_code"], "TABLE_READ_REQUIRED")
+        service.clear_table_cells.assert_not_called()
+        state["tool_results"].append(read_receipt(0))
+        dispatch()
+        self.assertTrue(state["tool_results"][-1]["success"])
+        self.assertEqual(service.clear_table_cells.call_args.kwargs["expected_table_version"], 0)
+        dispatch()
+        self.assertEqual(state["tool_results"][-1]["error_code"], "TABLE_READ_REQUIRED")
+        self.assertEqual(service.clear_table_cells.call_count, 1)
+
     def test_latest_matching_read_only(self):
         self.assertEqual(_table_read_version([read_receipt(0)], "t"), 0)
         self.assertEqual(_table_read_version([read_receipt(2), read_receipt(8, "other")], "t"), 2)

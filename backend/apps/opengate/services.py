@@ -1256,6 +1256,26 @@ class OpenGateService:
         table: GatesTable,
         cells: list[dict[str, int]],
         client_ip: Optional[str] = None,
+        expected_table_version: int | None = None,
+    ):
+        """Check the read revision under the same table lock used by upserts."""
+        if not OpenGateService.can_write_table(user, table):
+            return False, '没有写入权限'
+        baseline = _table_version(table) if expected_table_version is None else expected_table_version
+        with transaction.atomic():
+            locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+            current = _table_version(locked_table)
+            if current != baseline:
+                raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改',
+                    latest_table_version=current)
+            return OpenGateService._clear_table_cells_locked(user, locked_table, cells, client_ip)
+
+    @staticmethod
+    def _clear_table_cells_locked(
+        user: User,
+        table: GatesTable,
+        cells: list[dict[str, int]],
+        client_ip: Optional[str] = None,
     ):
         """Clear cell values and audit each requested cell coordinate."""
         if not OpenGateService.can_write_table(user, table):

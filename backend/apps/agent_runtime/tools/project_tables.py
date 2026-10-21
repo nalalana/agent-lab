@@ -354,11 +354,20 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
                 raise ValueError("cells 中不能重复指定同一单元格")
             seen_coordinates.add(coordinate)
             coordinates.append({"r": row, "c": column})
-        ok, cleared_count = OpenGateService.clear_table_cells(
-            user=user,
-            table=table,
-            cells=coordinates,
-        )
+        version = context.expected_table_version
+        if type(version) is not int or version < 0:
+            raise ToolExecutionError(code="TABLE_READ_REQUIRED",
+                message="请先读取目标表格，再根据读取结果提交清空。", retryable=False)
+        try:
+            ok, cleared_count = OpenGateService.clear_table_cells(
+                user=user,
+                table=table,
+                cells=coordinates,
+                expected_table_version=version,
+            )
+        except TableWriteConflict as exc:
+            raise ToolExecutionError(code=exc.code,
+                message="表格已发生变化，本次清空未执行；请重新读取并核对修改。", retryable=False) from exc
         if not ok:
             raise UnconfirmedWriteError()
         return {

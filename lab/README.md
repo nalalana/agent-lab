@@ -150,3 +150,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 运行 `python lab/test_table_versions.py` 和 `python lab/run_table_boundary.py --output lab/results/<新目录>`。这是本地合同与替身远端诊断，不代表真实数据库或模型成绩；整表版本可能因其他单元格变动而冲突，绕过审计的写入无法被该版本检测。
 
 结果见[读取版本绑定报告](experiments/2026-10-21-trusted-read-version.md)：117项本地检查、7组边界检查通过，无新增真实模型成绩。
+
+### 清空单元格版本保护（2026-10-21）
+
+后续修正把同一可信读取版本合同接入 company.table.clear_cells。缺少当前run读取时拒绝清空；OpenGate清空入口在与upsert相同的表锁内检查整表版本，再执行原清空及审计逻辑。过期版本在远端调用与创建审计前被拒绝；成功清空的审计推进整表版本，使之前的读取不能用于后续写入。
+
+`test_table_versions.py` 包含清空前置读取、模型版本不能覆盖、清空后必须重读检查；`run_table_boundary.py` 增加清空冲突、新版本清空、写入拒绝清空前版本及清空丢回执仍为unknown的组合诊断。仍未验证真实PostgreSQL行锁或immudb；本地事务无法回滚远端清空。
