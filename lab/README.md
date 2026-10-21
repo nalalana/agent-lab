@@ -158,3 +158,11 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 `test_table_versions.py` 包含清空前置读取、模型版本不能覆盖、清空后必须重读检查；`run_table_boundary.py` 增加清空冲突、新版本清空、写入拒绝清空前版本及清空丢回执仍为unknown的组合诊断。仍未验证真实PostgreSQL行锁或immudb；本地事务无法回滚远端清空。
 
 本轮94项本地检查、8组边界诊断通过，见[清空版本保护报告](experiments/2026-10-21-clear-read-version.md)，无真实模型调用。
+
+### PostgreSQL锁集成入口（待环境运行）
+
+`python lab/run_postgres_locks.py --output lab/results/<新目录>` 只连接本机127.0.0.1的专用数据库agent_lab_test，用户同名，默认端口55432。运行前在本地环境设置AGENT_LAB_PG_ENABLED=1、AGENT_LAB_PG_PASSWORD，非默认端口用AGENT_LAB_PG_PORT；不读取生产配置或lab/.env.local。测试账号须有该专用库的CREATE权限。每次新建UUID schema，测试结束仅删除该schema；不会创建或删除整个数据库。
+
+入口通过原源码方法与真实Django ORM检查写入/清空两个顺序的竞争，查询pg_stat_activity确认等待锁，放行后要求等待方拒绝旧版本且未调用远端。远端仍为SQLite替身、IAM和审核为允许夹具，不能称为完整immudb集成。连接或配置缺失返回unavailable且退出非零，不回退SQLite；仅通过真实锁场景才设置postgresql_lock_behavior_tested=true。
+
+当前机器未发现Docker/Podman/PostgreSQL服务或专用测试配置，真实锁场景尚未运行。`python lab/test_postgres_runner.py` 的3项检查只验证缺配置和连接失败时不回退、不暴露密码；不能算作PostgreSQL并发验证。
