@@ -134,3 +134,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 补充诊断还执行存储客户端upsertToTable的原始重试方法：异常后会自动重试，最多10次；外层门闩不能阻止调用内部重试。该保护只覆盖外层重发，不能宣称端到端避免重复写入。
 
 正式6组诊断见[公司表格跨库边界报告](experiments/2026-10-20-table-write-boundary.md)。已复现远端提交后失败、部分写入及隐藏SDK重试；实验guard仅覆盖外层重发，尚未接入生产路径。
+
+### 存储写入不确定时停止重发（2026-10-21）
+
+实验后端的 `toumingClient.upsertToTable` 对未确认写入只发送一次，抛出专用UnconfirmedWriteError；SELECT原有重试保持不变。company.table.write/clear_cells在旧服务返回False（可能部分成功）时保守保留unknown；执行前参数检查仍为参数错误。类型化未知经过表格服务、workspace执行器传至原执行图，停止排队调用和模型续写，retryable=false，未记为已完成去重键。公司表格写入的外层执行超时也保留unknown。
+
+`python lab/test_storage_retry.py` 验证实际SDK方法、异常/回执形态、读取重试及原图终止；`python -O lab/test_storage_retry.py` 验证确认检查不依赖assert。`run_table_boundary.py` 现在验证修改后的源码，昨日原始重试复现保留在原结果目录及报告中。仅修改agent-lab快照，尚无真实immudb/PostgreSQL验证或生产回迁；insertToTable等其他写接口的重试不在本次修复范围。

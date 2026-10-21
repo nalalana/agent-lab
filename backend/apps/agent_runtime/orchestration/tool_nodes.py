@@ -411,15 +411,17 @@ class Phase2Nodes(Phase1Nodes):
             else:
                 raise ToolExecutionError(code=str(ErrorCode.TOOL_DENIED), message="工具执行器不可用", retryable=False)
         except (asyncio.TimeoutError, TimeoutError):
+            code = (ErrorCode.OPERATION_OUTCOME_UNKNOWN if request.name in {
+                "company.table.write", "company.table.clear_cells"} else ErrorCode.SANDBOX_TIMEOUT)
             duration_ms = int((time.monotonic() - started) * 1000)
-            await _call_recorder(self.tool_recorder.failed, tool_call_id=context.tool_call_id, error_code=str(ErrorCode.SANDBOX_TIMEOUT), duration_ms=duration_ms)
+            await _call_recorder(self.tool_recorder.failed, tool_call_id=context.tool_call_id, error_code=str(code), duration_ms=duration_ms)
             append_event(state, RunEventType.TOOL_FAILED, {
                 "tool_call_id": context.tool_call_id,
                 "tool_name": pending.get("name"),
-                "code": str(ErrorCode.SANDBOX_TIMEOUT),
+                "code": str(code),
                 "message": "工具执行超时",
             })
-            _append_tool_failure_result(state, pending=pending, code=str(ErrorCode.SANDBOX_TIMEOUT), message="工具执行超时")
+            _append_tool_failure_result(state, pending=pending, code=str(code), message="工具执行超时")
             return state
         except ToolExecutionError as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -435,7 +437,9 @@ class Phase2Nodes(Phase1Nodes):
 
         duration_ms = int((time.monotonic() - started) * 1000)
         completed = state.setdefault("completed_tool_call_keys", set())
-        completed.add(str(pending.get("dedupe_key")))
+        outcome_unknown = str(result.error_code or "") == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN)
+        if not outcome_unknown:
+            completed.add(str(pending.get("dedupe_key")))
         tool_result = {
             "tool_call_id": context.tool_call_id,
             "model_call_id": str(pending.get("id") or ""),
@@ -443,10 +447,10 @@ class Phase2Nodes(Phase1Nodes):
             "content": result.content,
             "arguments": dict(pending.get("arguments") or {}),
             "error_code": result.error_code,
-            "success": result.success,
+            "success": result.success and not outcome_unknown,
             "artifact_refs": list(result.artifact_refs),
         }
-        if result.success:
+        if tool_result["success"]:
             await _call_recorder(self.tool_recorder.completed, tool_call_id=context.tool_call_id, duration_ms=duration_ms)
         else:
             await _call_recorder(
@@ -460,25 +464,29 @@ class Phase2Nodes(Phase1Nodes):
             tool_result["name"],
             tool_result["content"],
             _grounding_policy(state).get("target_terms") or (),
-        ) if result.success else None
+        ) if tool_result["success"] else None
         if evidence is not None:
             state["grounding_evidence"] = [*state.get("grounding_evidence", []), evidence]
             append_event(state, "grounding.evidence", evidence)
-        elif result.success and tool_result["name"] == "workspace.read" and _grounding_required(state):
+        elif tool_result["success"] and tool_result["name"] == "workspace.read" and _grounding_required(state):
             append_event(state, "grounding.evidence_rejected", {
                 "reason": "workspace_read_not_relevant_or_extractable",
             })
         _append_pending_turn_result(state, tool_result)
         state["pending_tool_call"] = None
         state["status"] = "RUNNING"
-        append_event(state, RunEventType.TOOL_COMPLETED if result.success else RunEventType.TOOL_FAILED, {
+        append_event(state, RunEventType.TOOL_COMPLETED if tool_result["success"] else RunEventType.TOOL_FAILED, {
             "tool_call_id": context.tool_call_id,
             "model_call_id": tool_result["model_call_id"],
             "tool_name": tool_result["name"],
-            "success": result.success,
+            "success": tool_result["success"],
             "artifact_refs": list(result.artifact_refs),
             "duration_ms": duration_ms,
         })
+        if outcome_unknown:
+            return fail_run(state, code=ErrorCode.OPERATION_OUTCOME_UNKNOWN,
+                message="写入结果未确认，可能已生效；请先核验状态，不要自动重试。",
+                stage="reconcile_tool", retryable=False)
         return state
 
     async def enqueue_memory_commit(self, state: AgentState) -> AgentState:
@@ -721,7 +729,7 @@ def _append_tool_failure_result(
     message: str,
 ) -> None:
     result = {
-        "tool_call_id": "",
+        "tool_call_id": getattr(pending.get("context"), "tool_call_id", ""),
         "model_call_id": str(pending.get("id") or ""),
         "name": str(pending.get("name") or ""),
         "arguments": pending.get("arguments") or {},
@@ -744,3 +752,7 @@ def _append_tool_failure_result(
         "code": str(code),
         "message": str(message or "工具不可用"),
     })
+    if str(code) == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN):
+        fail_run(state, code=ErrorCode.OPERATION_OUTCOME_UNKNOWN,
+            message="写入结果未确认，可能已生效；请先核验状态，不要自动重试。",
+            stage="reconcile_tool", retryable=False)

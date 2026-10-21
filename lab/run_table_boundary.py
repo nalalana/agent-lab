@@ -35,8 +35,11 @@ class RemoteFixture:
             return False, "remote refused the second cell"
         with transaction(self.path) as db:
             db.execute("INSERT OR REPLACE INTO cells VALUES (?, ?, ?, ?)", (tid, payload["r"], payload["c"], payload["cts"]))
-        if self.fault == "lost_ack":
-            self.fault = None
+        if self.fault in {"lost_ack", "typed_lost_ack"}:
+            fault, self.fault = self.fault, None
+            if fault == "typed_lost_ack":
+                from common.immudbIO.errors import UnconfirmedWriteError
+                raise UnconfirmedWriteError()
             raise TimeoutError("remote committed before the response was lost")
         return True, "written"
 
@@ -50,6 +53,7 @@ def load_writer(remote):
     from django.db.models import Max
     from apps.opengate.models import GatesTable, TableAuditEvent
     from common.immudbIO.models import CellCtfaChoices, CellCttChoices
+    from common.immudbIO.errors import UnconfirmedWriteError
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     helpers = {"TableWriteConflict", "_cell_versions", "_table_version", "_start_table_audit",
                "_finish_table_audit", "_ip_suffix", "_table_write_text_items"}
@@ -62,7 +66,7 @@ def load_writer(remote):
             node.body = [m for m in node.body if getattr(m, "name", None) in methods]
             body.append(node)
     namespace = {"transaction": django_transaction, "Max": Max, "GatesTable": GatesTable,
-        "TableAuditEvent": TableAuditEvent, "time": time, "logger": logging.getLogger("isolated-table-boundary"),
+        "TableAuditEvent": TableAuditEvent, "UnconfirmedWriteError": UnconfirmedWriteError, "time": time, "logger": logging.getLogger("isolated-table-boundary"),
         "CellCtfaChoices": CellCtfaChoices, "CellCttChoices": CellCttChoices,
         "TextModerationAsset": SimpleNamespace(SOURCE_EXTERNAL_API_TABLE_UPSERT="fixture"),
         "_moderate_opengate_texts": lambda **_: (True, ""), "ImmudbService": lambda: remote}
@@ -75,6 +79,7 @@ def load_writer(remote):
 def run(output):
     output.mkdir(parents=True, exist_ok=False)
     setup()
+    from common.immudbIO.errors import UnconfirmedWriteError
     logger = logging.getLogger("isolated-table-boundary")
     logger.addHandler(logging.FileHandler(output / "expected_faults.log", encoding="utf-8"))
     logger.propagate = False
@@ -237,7 +242,7 @@ else: raise AssertionError('retry accepted')
             return SimpleNamespace(txs=[1], ongoingTx=False)
         def intervening_write(_seconds):
             remote.upsert_data("gid", tid, {"r": 0, "c": 0, "cts": "200"})
-        namespace = {"time": SimpleNamespace(sleep=intervening_write),
+        namespace = {"UnconfirmedWriteError": UnconfirmedWriteError, "time": SimpleNamespace(sleep=intervening_write),
             "random": SimpleNamespace(uniform=lambda *_: 0),
             "print": lambda *args: logger.warning(" ".join(str(x) for x in args))}
         exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(CLIENT_SOURCE), "exec"), namespace)
@@ -251,19 +256,45 @@ else: raise AssertionError('retry accepted')
             response = client.upsertToTable(tid, [], [], {"r": 0, "c": 0, "cts": "100"})
             return True, {"confirmed_txs": len(response.txs)}
         guard = LegacyWriteGuard(output / "guard.sqlite", scope="company:user:agent:sdk-task")
-        guard.invoke("edit", "company.table.write", {"tid": tid}, authorize=lambda: True, execute=execute)
-        assert len(outer_calls) == 1 and len(sql_calls) == 2
-        assert remote.values(tid)[0]["value"] == "100"
-        assert guard.status("edit", authorize=lambda: True)["state"] == "acknowledged"
-        return {"outer_guard_executions": 1, "client_sql_attempts": 2, "retry_limit": namespace["RETRY_MAX_COUNT"],
-                "intervening_value": 200, "final_value": 100, "outer_guard_cannot_stop_inner_retries": True}
+        try:
+            guard.invoke("edit", "company.table.write", {"tid": tid}, authorize=lambda: True, execute=execute)
+        except OutcomeUnknown:
+            pass
+        else:
+            raise AssertionError("Unconfirmed SDK response was accepted")
+        assert len(outer_calls) == 1 and len(sql_calls) == 1 and remote.calls == 1
+        intervening_write(0)
+        try:
+            guard.invoke("edit", "company.table.write", {"tid": tid}, authorize=lambda: True, execute=execute)
+        except OutcomeUnknown:
+            pass
+        else:
+            raise AssertionError("Unknown write was retried")
+        assert len(sql_calls) == 1 and remote.values(tid)[0]["value"] == "200"
+        assert guard.status("edit", authorize=lambda: True)["state"] == "unknown"
+        return {"outer_guard_executions": 1, "client_sql_attempts": 1,
+                "intervening_value": 200, "final_value": 200, "unknown_preserved": True}
+
+    def typed_service_error():
+        t = table("typed-unknown")
+        remote = RemoteFixture(output / "remote.sqlite", "typed_lost_ack")
+        try:
+            load_writer(remote).upsert_table_cells(user, t, [{"r": 0, "c": 0, "value": 10}])
+        except UnconfirmedWriteError:
+            pass
+        else:
+            raise AssertionError("Service swallowed the typed unknown outcome")
+        assert remote.values(t.tid)[0]["value"] == "10"
+        assert TableAuditEvent.objects.filter(table=t).count() == 0
+        return {"typed_error_preserved": True, "remote_committed": True, "local_audit_rows": 0}
 
     record("cross_database_lost_ack", lost_ack)
     record("multi_cell_partial_failure", partial)
     record("persistent_unknown_guard", guarded)
     record("acknowledged_replay_authorization", replay)
     record("original_version_precondition", stale_version)
-    record("hidden_storage_client_retry", hidden_client_retry)
+    record("storage_client_stops_unknown", hidden_client_retry)
+    record("service_preserves_typed_unknown", typed_service_error)
     (output / "trials.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     summary = {"selected": len(rows), "checks_passed": sum(r["checks_passed"] for r in rows),
                "errors": sum(not r["checks_passed"] for r in rows), "not_a_full_platform_integration": True}

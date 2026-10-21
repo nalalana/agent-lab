@@ -13,6 +13,7 @@ from apps.iam.models import Grant, Resource, Tenant
 from apps.iam.services import runtime_action_allowed
 from apps.opengate.models import Gates, GatesTable
 from apps.opengate.services import OpenGateService
+from common.immudbIO.errors import UnconfirmedWriteError
 from apps.user.models import User
 
 
@@ -316,7 +317,8 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             cells=cells,
         )
         if not ok:
-            raise ValueError(str(message))
+            # Legacy False can mean partial remote effects, not "nothing happened".
+            raise UnconfirmedWriteError()
         return {"tool_name": request.name, "tid": table.tid, "updated_cells": len(cells), "message": str(message)}
 
     if request.name == "company.table.clear_cells":
@@ -348,7 +350,7 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             cells=coordinates,
         )
         if not ok:
-            raise ValueError(str(cleared_count))
+            raise UnconfirmedWriteError()
         return {
             "tool_name": request.name,
             "tid": table.tid,

@@ -30,6 +30,7 @@ from apps.moderation.services import ImageModerationService, TextModerationServi
 from properties import db_local_base_url, db_local_base_port, USER, PASSWORD
 from apps.opengate.models import GatesTable
 from common.immudbIO.services import ImmudbService
+from common.immudbIO.errors import UnconfirmedWriteError
 from common.immudbIO.models import CellCtfaChoices, CellCttChoices
 
 
@@ -1214,6 +1215,9 @@ class OpenGateService:
                         for event in events
                     },
                 }
+        except UnconfirmedWriteError:
+            # Preserve uncertainty across the ORM/remote-store boundary.
+            raise
         except TableWriteConflict:
             raise
         except Exception as e:

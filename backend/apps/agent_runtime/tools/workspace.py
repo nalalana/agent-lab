@@ -23,6 +23,7 @@ from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.db import transaction
 from pypdf import PdfReader
+from common.immudbIO.errors import UnconfirmedWriteError
 
 from apps.agent_runtime.contracts import ToolContext, ToolRequest, ToolResult
 from apps.agent_runtime.enums import ErrorCode
@@ -99,6 +100,8 @@ class DjangoWorkspaceBackendToolExecutor(BackendToolExecutor):
                     execute_project_table_tool,
                     thread_sensitive=True,
                 )(request, context)
+            except UnconfirmedWriteError as exc:
+                return _failure(str(exc), exc.code)
             except ProjectTablePermissionDenied as exc:
                 return _failure(str(exc), ErrorCode.TOOL_DENIED)
             except (ValueError, FileNotFoundError) as exc:

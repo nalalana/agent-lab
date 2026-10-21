@@ -8,6 +8,7 @@ from immudb import constants
 from immudb.client import ImmudbClient
 import uuid
 from typing import List
+from common.immudbIO.errors import UnconfirmedWriteError
 
 RETRY_MAX_COUNT = 10
 SLEEP_MIN = 0.5
@@ -168,17 +169,15 @@ class toumingClient:
     
     def upsertToTable(self, table: str, fields: List[str], values: List, params: dict):
         preparedQuery = self.prepareUpsertQuery(table, fields, values)
-        if (self.currentTx):
-            return self.currentTx.sqlExec(preparedQuery, params)
-        for _ in range(RETRY_MAX_COUNT):
-            try:
-                resp = self.client.sqlExec(preparedQuery, params)
-                assert (len(resp.txs) > 0 and not resp.ongoingTx)
-                return resp
-            except Exception as e:
-                print(f"Error upserting to table {table}: {e}")
-                time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
-        return False, f"Failed to upsert to table {table} after {RETRY_MAX_COUNT} retries"
+        # Without an operation-level idempotency contract, a lost acknowledgement
+        # cannot be retried safely: another writer may have changed the same cell.
+        try:
+            resp = (self.currentTx or self.client).sqlExec(preparedQuery, params)
+        except Exception as exc:
+            raise UnconfirmedWriteError() from exc
+        if not self.currentTx and (not getattr(resp, "txs", None) or getattr(resp, "ongoingTx", False)):
+            raise UnconfirmedWriteError()
+        return resp
 
     def simpleSelect(self, fromWhat: str, whatToSelect: List[str], params: dict, *conditions: List[str],
                      columnNameMode=constants.COLUMN_NAME_MODE_NONE):
