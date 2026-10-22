@@ -303,15 +303,19 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             raise ProjectTablePermissionDenied("当前 Agent 无权写入该表格")
         cells = request.arguments.get("cells")
         if not isinstance(cells, list) or not cells:
-            raise ValueError("cells 必须是非空数组")
+            raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="cells 必须是非空数组",
+                retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
         for cell in cells:
             if not isinstance(cell, dict) or not isinstance(cell.get("r"), int) or not isinstance(cell.get("c"), int) or "value" not in cell:
-                raise ValueError("每个单元格需要整数 r、整数 c 和 value")
+                raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="每个单元格需要整数 r、整数 c 和 value",
+                    retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
             if cell["r"] < 0 or cell["c"] < 0 or cell["c"] >= int(table.num_columns or 0):
-                raise ValueError("单元格行列索引超出表格范围")
+                raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="单元格行列索引超出表格范围",
+                    retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
             value = cell["value"]
             if value is not None and not isinstance(value, (str, int, float, bool)):
-                raise ValueError("单元格 value 仅支持文本、数字、布尔值或空值")
+                raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="单元格 value 仅支持文本、数字、布尔值或空值",
+                    retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
         version = context.expected_table_version
         if type(version) is not int or version < 0:
             raise ToolExecutionError(code="TABLE_READ_REQUIRED",
@@ -338,7 +342,8 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             raise ProjectTablePermissionDenied("当前 Agent 无权清空该表格单元格")
         cells = request.arguments.get("cells")
         if not isinstance(cells, list) or not cells or len(cells) > 100:
-            raise ValueError("cells 必须是 1 到 100 项的数组")
+            raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="cells 必须是 1 到 100 项的数组",
+                retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
         coordinates = []
         seen_coordinates = set()
         for cell in cells:
@@ -347,13 +352,16 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
                 or type(cell.get("r")) is not int
                 or type(cell.get("c")) is not int
             ):
-                raise ValueError("每个单元格需要整数 r 和整数 c")
+                raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="每个单元格需要整数 r 和整数 c",
+                    retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
             row, column = cell["r"], cell["c"]
             if row < 0 or column < 0 or column >= int(table.num_columns or 0):
-                raise ValueError("单元格行列索引超出表格范围")
+                raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="单元格行列索引超出表格范围",
+                    retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
             coordinate = (row, column)
             if coordinate in seen_coordinates:
-                raise ValueError("cells 中不能重复指定同一单元格")
+                raise ToolExecutionError(code="TOOL_INVALID_ARGUMENTS", message="cells 中不能重复指定同一单元格",
+                    retryable=False, execution_status="not_dispatched", business_outcome="not_attempted")
             seen_coordinates.add(coordinate)
             coordinates.append({"r": row, "c": column})
         version = context.expected_table_version
