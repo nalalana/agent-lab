@@ -40,6 +40,7 @@ from apps.agent_runtime.tools.executors import (
     tool_call_id,
 )
 from apps.agent_runtime.tools.registry import ToolRouter, default_tool_registry
+from apps.agent_runtime.tools.recovery import recovery_policy
 
 
 MAX_RESPONSE_CORRECTIONS = 2
@@ -436,7 +437,7 @@ class Phase2Nodes(Phase1Nodes):
                 "code": exc.code,
                 "message": exc.safe_message,
             })
-            _append_tool_failure_result(state, pending=pending, code=exc.code, message=exc.safe_message)
+            _append_tool_failure_result(state, pending=pending, code=exc.code, message=exc.safe_message, retryable=exc.retryable)
             return state
 
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -453,7 +454,18 @@ class Phase2Nodes(Phase1Nodes):
             "error_code": result.error_code,
             "success": result.success and not outcome_unknown,
             "artifact_refs": list(result.artifact_refs),
+            "retryable": result.retryable and not outcome_unknown,
         }
+        if not tool_result["success"]:
+            recovery = recovery_policy(str(result.error_code or ErrorCode.INTERNAL_ERROR))
+            try:
+                payload = json.loads(tool_result["content"])
+            except (TypeError, ValueError):
+                payload = tool_result["content"]
+            payload = dict(payload) if isinstance(payload, dict) else {"result": payload}
+            payload["runtime_recovery"] = recovery
+            tool_result["content"] = json.dumps(payload, ensure_ascii=False)
+            tool_result["recovery_action"] = recovery["action"]
         if tool_result["success"]:
             await _call_recorder(self.tool_recorder.completed, tool_call_id=context.tool_call_id, duration_ms=duration_ms)
         else:
@@ -752,7 +764,9 @@ def _append_tool_failure_result(
     pending: dict[str, Any],
     code: str,
     message: str,
+    retryable: bool = False,
 ) -> None:
+    recovery = recovery_policy(str(code))
     result = {
         "tool_call_id": getattr(pending.get("context"), "tool_call_id", ""),
         "model_call_id": str(pending.get("id") or ""),
@@ -761,11 +775,14 @@ def _append_tool_failure_result(
         "content": json.dumps({
             "success": False,
             "error": str(message or "工具不可用"),
-            "instruction": "不要重复调用该工具，请根据错误直接向用户说明。",
+            "instruction": recovery["instruction"],
+            "runtime_recovery": recovery,
         }, ensure_ascii=False),
         "success": False,
         "artifact_refs": [],
         "error_code": str(code),
+        "recovery_action": recovery["action"],
+        "retryable": retryable and str(code) != str(ErrorCode.OPERATION_OUTCOME_UNKNOWN),
     }
     state["tool_results"] = [*state.get("tool_results", []), result]
     _append_pending_turn_result(state, result)
