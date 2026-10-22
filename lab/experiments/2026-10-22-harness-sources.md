@@ -16,6 +16,10 @@
 
 上述三种方案分别改变错误修复归属、模型所见证据表达和实验身份约束。它们可以独立比较后组合；不能把三者同时修改后的成绩全部归因于某一论文。
 
+代码级补充阅读：[Pydantic AI output validators](https://pydantic.dev/docs/ai/core-concepts/output/#output-validators) 的有限 output retry / ModelRetry，以及 [Guardrails reask.py](https://github.com/guardrails-ai/guardrails/blob/main/guardrails/actions/reask.py) 的前次输出与字段错误结构化重询；已读对应小节/实现，未引入这两个框架。它们启发 contract-repair 的修复输入形态，不保证其语义判断正确。
+
+评测流程同时参考 [Google：The Anatomy of Harness Engineering](https://developers.googleblog.com/the-anatomy-of-harness-engineering-how-to-evaluate-iterate-and-guard-ai-coding-agents/)（2026-09-09，已读行为评测与断言设计）和 [Anthropic：Demystifying evals](https://www.anthropic.com/research/demystifying-evals-for-ai-agents)（2026-01-09，已读评测结构与局限）。二者支持同时检查中间行为、最终状态和评分器，不能用单一总分替代实际任务完成。本轮新增确定性 unknown 门禁也遵循上述职责边界：可信副作用状态由运行时代码处置，不能依赖 LLM 从错误文案推断。
+
 ## 下一轮评测可采用的配对方法
 
 [HERA v1](https://arxiv.org/html/2610.06563v1)（2026-10-05；[作者仓库](https://github.com/lhannnn/HERA-Bench)）的 §3、附录 A.4/B，把可完成与不可完成任务组成受控环境变更对，且禁止 harness 优化修改工具语义、评分器、分组和预算。[AgentAbstain](https://agentabstain.github.io/)（[论文](https://arxiv.org/abs/2607.10059)、[代码](https://github.com/AntiQuality/agentabstain)）区分实际提交动作与最终回复，避免“先写入再拒绝”被评为成功。本轮阅读了这些方法/评分说明和仓库说明，没有下载执行基准或复现自动演化。
