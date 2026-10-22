@@ -168,3 +168,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 当前机器未发现Docker/Podman/PostgreSQL服务或专用测试配置，真实锁场景尚未运行。`python lab/test_postgres_runner.py` 的3项检查只验证缺配置和连接失败时不回退、不暴露密码；不能算作PostgreSQL并发验证。
 
 后续支持显式云测试配置：`python lab/run_postgres_locks.py --config lab/.postgres.local.json --output lab/results/<新目录>`。JSON键使用AGENT_LAB_PG_ENABLED、PASSWORD、HOST、PORT、DATABASE、USER的完整AGENT_LAB_PG_前缀；本地文件已忽略。数据库须为agent_lab_test或test_开头，连接强制TLS require（不代表已校验证书主机名），默认连接仍为本机。当前用户提供的云测试实例TCP连接超时，未登录、未建schema；实际并发验证仍待网络放通。新增配置检查共4项，不是数据库测试成绩。
+
+### 版本冲突后的真实模型恢复（2026-10-22）
+
+PostgreSQL测试已按用户要求停止。`python lab/run_conflict_recovery.py --output lab/results/<新目录>` 使用原Phase2图、真实模型和独立SQLite工具夹具，检查先读后改、条件变化保留他人数据及冲突重试上限；不连接外部数据库。`python lab/test_conflict_recovery.py` 验证夹具冲突与提交行为。
+
+首轮6项数据状态合同全部满足，但审阅发现连续冲突后模型将过期读取值当作当前值，校验器误放行。机械通过与语义正确必须分开，见[真实模型冲突恢复报告](experiments/2026-10-22-conflict-recovery.md)。
