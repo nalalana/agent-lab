@@ -70,6 +70,7 @@ def default_tool_registry(extra_definitions: Iterable[ToolDefinition] | None = N
     ))
     registry.register(ToolDefinition(
         name="company.project_tables.list",
+        effect_class="read_only",
         executor="backend",
         required_permission="tool.project_table.read",
         timeout_seconds=15,
@@ -81,6 +82,7 @@ def default_tool_registry(extra_definitions: Iterable[ToolDefinition] | None = N
     ))
     registry.register(ToolDefinition(
         name="company.table.read",
+        effect_class="read_only",
         executor="backend",
         required_permission="tool.project_table.read",
         timeout_seconds=30,
@@ -98,6 +100,7 @@ def default_tool_registry(extra_definitions: Iterable[ToolDefinition] | None = N
     ))
     registry.register(ToolDefinition(
         name="company.table.write",
+        effect_class="mutates",
         executor="backend",
         required_permission="tool.project_table.write",
         timeout_seconds=30,
@@ -131,6 +134,7 @@ def default_tool_registry(extra_definitions: Iterable[ToolDefinition] | None = N
     ))
     registry.register(ToolDefinition(
         name="company.table.clear_cells",
+        effect_class="mutates",
         executor="backend",
         required_permission="tool.project_table.write",
         timeout_seconds=30,

@@ -31,9 +31,12 @@ def cases():
     ]
 
 
-async def run(output, transfer=False):
+async def run(output, transfer=False, receipt_contract=False):
     cfg = model_config()
-    if transfer:
+    if receipt_contract:
+        from outcome_contract_cases import cases as outcome_cases
+        selected = outcome_cases()
+    elif transfer:
         from freshness_cases_v2 import cases as transfer_cases
         selected = transfer_cases()
     else:
@@ -42,6 +45,7 @@ async def run(output, transfer=False):
     output.mkdir(parents=True, exist_ok=False)
     (output / "manifest.json").write_text(json.dumps({"model": cfg["MODEL"], "kind": "synthetic_freshness_verifier",
         "transfer": transfer, "case_sha256": hashlib.sha256(json.dumps(selected, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+        "receipt_contract": receipt_contract,
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True))}, indent=2), encoding="utf-8")
     rows = []
@@ -81,5 +85,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--transfer", action="store_true", help="Frozen new table/language/mixed-task diagnostic")
+    parser.add_argument("--receipt-contract", action="store_true", help="Trusted execution vs business outcome diagnostics")
     args = parser.parse_args()
-    asyncio.run(run(args.output, args.transfer))
+    if args.transfer and args.receipt_contract:
+        parser.error("Choose one diagnostic suite")
+    asyncio.run(run(args.output, args.transfer, args.receipt_contract))

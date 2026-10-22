@@ -80,11 +80,11 @@ class BusinessEnvironment(BackendToolExecutor):
                 value = cell.get("value") if request.name == "company.table.write" else None
                 self.db.execute("UPDATE cells SET value=? WHERE r=? AND c=?",
                                 (json.dumps(value, ensure_ascii=False), cell["r"], cell["c"]))
-        return self.success({"tid": "stats", "updated": len(cells), "cells": cells})
+        return self.success({"tid": "stats", "updated": len(cells), "cells": cells}, business_outcome="succeeded")
 
     @staticmethod
-    def success(data):
-        return ToolResult(True, json.dumps(data, ensure_ascii=False), (), None, False)
+    def success(data, *, business_outcome="unknown"):
+        return ToolResult(True, json.dumps(data, ensure_ascii=False), (), None, False, business_outcome=business_outcome)
 
     @staticmethod
     def failure(code, message):

@@ -26,10 +26,13 @@ from .definitions import ToolDefinition
 
 
 class ToolExecutionError(RuntimeError):
-    def __init__(self, *, code: str, message: str, retryable: bool = False) -> None:
+    def __init__(self, *, code: str, message: str, retryable: bool = False,
+                 execution_status: str = "unconfirmed", business_outcome: str = "unknown") -> None:
         self.code = code
         self.safe_message = message
         self.retryable = retryable
+        self.execution_status = execution_status
+        self.business_outcome = business_outcome
         super().__init__(message)
 
 

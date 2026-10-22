@@ -315,7 +315,8 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
         version = context.expected_table_version
         if type(version) is not int or version < 0:
             raise ToolExecutionError(code="TABLE_READ_REQUIRED",
-                message="请先读取目标表格，再根据读取结果提交写入。", retryable=False)
+                message="请先读取目标表格，再根据读取结果提交写入。", retryable=False,
+                execution_status="not_dispatched", business_outcome="not_attempted")
         try:
             ok, message = OpenGateService.upsert_table_cells(
                 user=user,
@@ -325,7 +326,8 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             )
         except TableWriteConflict as exc:
             raise ToolExecutionError(code=exc.code,
-                message="表格已发生变化，本次写入未执行；请重新读取并核对修改。", retryable=False) from exc
+                message="表格已发生变化，本次写入未执行；请重新读取并核对修改。", retryable=False,
+                execution_status="returned", business_outcome="conflict") from exc
         if not ok:
             # Legacy False can mean partial remote effects, not "nothing happened".
             raise UnconfirmedWriteError()
@@ -357,7 +359,8 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
         version = context.expected_table_version
         if type(version) is not int or version < 0:
             raise ToolExecutionError(code="TABLE_READ_REQUIRED",
-                message="请先读取目标表格，再根据读取结果提交清空。", retryable=False)
+                message="请先读取目标表格，再根据读取结果提交清空。", retryable=False,
+                execution_status="not_dispatched", business_outcome="not_attempted")
         try:
             ok, cleared_count = OpenGateService.clear_table_cells(
                 user=user,
@@ -367,7 +370,8 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
             )
         except TableWriteConflict as exc:
             raise ToolExecutionError(code=exc.code,
-                message="表格已发生变化，本次清空未执行；请重新读取并核对修改。", retryable=False) from exc
+                message="表格已发生变化，本次清空未执行；请重新读取并核对修改。", retryable=False,
+                execution_status="returned", business_outcome="conflict") from exc
         if not ok:
             raise UnconfirmedWriteError()
         return {

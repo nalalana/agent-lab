@@ -19,6 +19,7 @@ class ToolDefinition:
     description: str = ""
     network_policy: str = "isolated"
     args_schema: dict[str, Any] = field(default_factory=dict)
+    effect_class: Literal["read_only", "mutates", "unknown"] = "unknown"
 
     def to_snapshot_dict(self) -> dict[str, Any]:
         """Return the stable, secret-free contract persisted with each Run."""
@@ -30,6 +31,7 @@ class ToolDefinition:
             "description": self.description,
             "networkPolicy": self.network_policy,
             "argsSchema": self.args_schema,
+            "effectClass": self.effect_class,
         }
 
 

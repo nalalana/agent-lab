@@ -358,6 +358,7 @@ class Phase2Nodes(Phase1Nodes):
                 pending={**pending, "id": model_call_id, "name": name},
                 code=str(code),
                 message=getattr(exc, "safe_message", "工具不可用"),
+                execution_status="not_dispatched", business_outcome="not_attempted",
             )
             return state
 
@@ -437,7 +438,8 @@ class Phase2Nodes(Phase1Nodes):
                 "code": exc.code,
                 "message": exc.safe_message,
             })
-            _append_tool_failure_result(state, pending=pending, code=exc.code, message=exc.safe_message, retryable=exc.retryable)
+            _append_tool_failure_result(state, pending=pending, code=exc.code, message=exc.safe_message,
+                retryable=exc.retryable, execution_status=exc.execution_status, business_outcome=exc.business_outcome)
             return state
 
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -455,17 +457,24 @@ class Phase2Nodes(Phase1Nodes):
             "success": result.success and not outcome_unknown,
             "artifact_refs": list(result.artifact_refs),
             "retryable": result.retryable and not outcome_unknown,
+            "execution_status": "unconfirmed" if outcome_unknown else result.execution_status,
+            "business_outcome": "unknown" if outcome_unknown else result.business_outcome,
+            "effect_class": getattr(definition, "effect_class", "unknown"),
         }
+        metadata = {k: tool_result[k] for k in ("execution_status", "business_outcome", "effect_class")}
+        try:
+            payload = json.loads(tool_result["content"])
+        except (TypeError, ValueError):
+            payload = tool_result["content"]
+        payload = dict(payload) if isinstance(payload, dict) else {"result": payload}
+        payload["runtime_outcome"] = metadata
         if not tool_result["success"]:
             recovery = recovery_policy(str(result.error_code or ErrorCode.INTERNAL_ERROR))
-            try:
-                payload = json.loads(tool_result["content"])
-            except (TypeError, ValueError):
-                payload = tool_result["content"]
-            payload = dict(payload) if isinstance(payload, dict) else {"result": payload}
             payload["runtime_recovery"] = recovery
-            tool_result["content"] = json.dumps(payload, ensure_ascii=False)
             tool_result["recovery_action"] = recovery["action"]
+        if (not tool_result["success"] or result.execution_status != "returned"
+                or result.business_outcome != "unknown" or metadata["effect_class"] != "unknown"):
+            tool_result["content"] = json.dumps(payload, ensure_ascii=False)
         if tool_result["success"]:
             await _call_recorder(self.tool_recorder.completed, tool_call_id=context.tool_call_id, duration_ms=duration_ms)
         else:
@@ -498,6 +507,7 @@ class Phase2Nodes(Phase1Nodes):
             "success": tool_result["success"],
             "artifact_refs": list(result.artifact_refs),
             "duration_ms": duration_ms,
+            **metadata,
         })
         if outcome_unknown:
             return fail_run(state, code=ErrorCode.OPERATION_OUTCOME_UNKNOWN,
@@ -765,9 +775,16 @@ def _append_tool_failure_result(
     code: str,
     message: str,
     retryable: bool = False,
+    execution_status: str = "unconfirmed",
+    business_outcome: str = "unknown",
 ) -> None:
     recovery = recovery_policy(str(code))
+    metadata = {"execution_status": execution_status, "business_outcome": business_outcome,
+        "effect_class": getattr(pending.get("definition"), "effect_class", "unknown")}
+    if str(code) == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN):
+        metadata.update(execution_status="unconfirmed", business_outcome="unknown")
     result = {
+        **metadata,
         "tool_call_id": getattr(pending.get("context"), "tool_call_id", ""),
         "model_call_id": str(pending.get("id") or ""),
         "name": str(pending.get("name") or ""),
@@ -777,6 +794,7 @@ def _append_tool_failure_result(
             "error": str(message or "工具不可用"),
             "instruction": recovery["instruction"],
             "runtime_recovery": recovery,
+            "runtime_outcome": metadata,
         }, ensure_ascii=False),
         "success": False,
         "artifact_refs": [],
@@ -793,6 +811,7 @@ def _append_tool_failure_result(
         "tool_name": result["name"],
         "code": str(code),
         "message": str(message or "工具不可用"),
+        **metadata,
     })
     if str(code) == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN):
         fail_run(state, code=ErrorCode.OPERATION_OUTCOME_UNKNOWN,

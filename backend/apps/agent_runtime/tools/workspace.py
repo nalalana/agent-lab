@@ -105,13 +105,15 @@ class DjangoWorkspaceBackendToolExecutor(BackendToolExecutor):
             except ToolExecutionError:
                 raise
             except ProjectTablePermissionDenied as exc:
-                return _failure(str(exc), ErrorCode.TOOL_DENIED)
+                return _failure(str(exc), ErrorCode.TOOL_DENIED,
+                    execution_status="not_dispatched", business_outcome="not_attempted")
             except (ValueError, FileNotFoundError) as exc:
                 return _failure(str(exc), ErrorCode.TOOL_INVALID_ARGUMENTS)
             except Exception:
                 logger.exception("project/table tool failed tool=%s", request.name)
                 return _failure("项目表格工具暂时不可用", ErrorCode.INTERNAL_ERROR)
-            return _success(payload)
+            return _success(payload, business_outcome="succeeded" if request.name in {
+                "company.table.write", "company.table.clear_cells"} else "not_applicable")
         if request.name not in WORKSPACE_TOOLS:
             return await super().execute(definition, request, context)
         try:
@@ -544,17 +546,18 @@ class DjangoWorkspaceBackendToolExecutor(BackendToolExecutor):
         }
 
 
-def _success(payload: dict[str, Any]) -> ToolResult:
+def _success(payload: dict[str, Any], *, business_outcome="unknown") -> ToolResult:
     return ToolResult(
         success=True,
         content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         artifact_refs=(),
         error_code=None,
         retryable=False,
+        business_outcome=business_outcome,
     )
 
 
-def _failure(message: str, code: ErrorCode) -> ToolResult:
+def _failure(message: str, code: ErrorCode, *, execution_status="unconfirmed", business_outcome="unknown") -> ToolResult:
     return ToolResult(
         success=False,
         content=json.dumps({
@@ -565,6 +568,8 @@ def _failure(message: str, code: ErrorCode) -> ToolResult:
         artifact_refs=(),
         error_code=str(code),
         retryable=False,
+        execution_status=execution_status,
+        business_outcome=business_outcome,
     )
 
 

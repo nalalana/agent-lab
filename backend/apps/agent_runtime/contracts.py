@@ -130,6 +130,8 @@ class ToolResult:
     artifact_refs: tuple[str, ...]
     error_code: str | None
     retryable: bool
+    execution_status: Literal["not_dispatched", "returned", "unconfirmed"] = "returned"
+    business_outcome: Literal["not_attempted", "not_applicable", "succeeded", "rejected", "conflict", "unknown"] = "unknown"
 
 
 @dataclass(frozen=True)
