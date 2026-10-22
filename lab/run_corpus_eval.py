@@ -126,7 +126,7 @@ async def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", type=Path, default=ROOT / "lab/datasets/agent-eval-v1")
+    parser.add_argument("--corpus", type=Path, default=ROOT / "lab/datasets/agent-eval-v2")
     parser.add_argument("--dataset", choices=["synthetic", "ragtruth"], required=True)
     parser.add_argument("--split", choices=["dev", "validation", "test"], default="validation")
     parser.add_argument("--output", type=Path)

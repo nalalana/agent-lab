@@ -55,7 +55,7 @@ def synthetic(groups=100, seed=20261022):
             for language in (0, 1):
                 for supported, drafts in ((True, good), (False, bad)):
                     name = f"synthetic-{group}-{family}-{'zh' if language == 0 else 'en'}-{int(supported)}"
-                    request = "仅根据工具记录报告库存、预算和操作状态，不执行新操作。" if language == 0 else "Report observed stock, budget and outcomes using only the receipts. Do not perform new actions."
+                    request = "请仅核对草稿中已讨论的数值与操作状态是否有工具记录依据，无需补充草稿未讨论的指标，不执行新操作。" if language == 0 else "Check only the values and outcomes discussed in the draft against the supplied receipts. Do not require additional metrics not discussed in the draft, and do not perform new actions."
                     yield {"id": name, "group": group, "family": family, "language": "zh" if language == 0 else "en",
                         "split": splits[n], "dataset": "synthetic", "supported": supported, "draft": drafts[language],
                         "state": {"run_id": name, "max_execution_seconds": 60,
@@ -75,10 +75,16 @@ def public_rows(dataset, results_root, partitions):
     scanned = []
     for path in sorted(results_root.rglob("manifest.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        if "ragtruth" not in str(data.get("kind", "")).lower():
+        is_corpus_run = data.get("identity", {}).get("dataset") == "ragtruth"
+        if "ragtruth" not in str(data.get("kind", "")).lower() and not is_corpus_run:
             continue
         seen.update(s for s in data.get("source_ids", []) if s in group)
         seen.update(by_id[r]["source_id"] for r in data.get("sample_ids", []) if r in by_id)
+        if is_corpus_run and (path.parent / "trials.jsonl").exists():
+            for line in (path.parent / "trials.jsonl").read_text(encoding="utf-8").splitlines():
+                response_id = json.loads(line)["id"].removeprefix("ragtruth-")
+                if response_id in by_id:
+                    seen.add(by_id[response_id]["source_id"])
         scanned.append(str(path.relative_to(ROOT)))
     prior = json.loads(partitions.read_text(encoding="utf-8"))
     reserved = {by_id[r]["source_id"] for r in prior["partitions"]["holdout"]["response_ids"]}
@@ -151,7 +157,7 @@ def build(output):
             files[path.name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "cases": len(selected),
                 "groups": len({r["group"] for r in selected}), "supported": sum(r["supported"] for r in selected),
                 "families": dict(Counter(r["family"] for r in selected))}
-    manifest = {"version": 1, "seed": 20261022, "files": files, "integrity": integrity, "contamination_audit": audit,
+    manifest = {"version": 2, "seed": 20261022, "files": files, "integrity": integrity, "contamination_audit": audit,
         "public_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=DATASET, text=True).strip(),
         "public_file_hashes": {n: hashlib.sha256((DATASET / "dataset" / n).read_bytes()).hexdigest() for n in ("source_info.jsonl", "response.jsonl")},
         "synthetic_limit": "100 entity groups, 8 workflow templates, paired labels and languages; shared templates across entity splits",
@@ -163,5 +169,5 @@ def build(output):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "lab/datasets/agent-eval-v1")
+    parser.add_argument("--output", type=Path, default=ROOT / "lab/datasets/agent-eval-v2")
     build(parser.parse_args().output)

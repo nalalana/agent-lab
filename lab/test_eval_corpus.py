@@ -21,6 +21,9 @@ class CorpusTests(unittest.TestCase):
             self.assertEqual(len(selected), count)
             self.assertEqual(sum(r["supported"] for r in selected), count // 2)
             self.assertTrue(all("supported" not in r["state"]["config"] for r in selected))
+        for row in rows:
+            request = row["state"]["config"]["user_text"]
+            self.assertTrue("无需补充" in request or "Do not require additional metrics" in request)
 
     def test_audit_rejects_group_leakage(self):
         row = next(synthetic())
