@@ -695,6 +695,8 @@ class AgentRunRecorder:
                 error_message=str(event.data.get("message") or "操作未完成，请稍后重试"),
                 completed_at=now,
             )
+            updates.update({key: max(0, int(event.data[key] or 0))
+                for key in ("input_tokens", "output_tokens") if key in event.data})
         elif event_type == str(RunEventType.RUN_CANCELLED):
             updates.update(
                 status=AgentRun.STATUS_CANCELLED,

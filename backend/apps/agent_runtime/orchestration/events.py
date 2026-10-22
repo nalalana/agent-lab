@@ -51,6 +51,8 @@ def fail_run(
         "stage": error.stage,
         "trace_id": error.trace_id,
         "content": state.get("output_content", ""),
+        **{key: max(0, int(value or 0)) for key, value in (state.get("usage") or {}).items()
+           if key in {"input_tokens", "output_tokens", "total_tokens"}},
     })
     return state
 

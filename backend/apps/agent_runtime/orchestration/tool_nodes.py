@@ -30,7 +30,9 @@ from apps.agent_runtime.orchestration.nodes import (
 )
 from apps.agent_runtime.orchestration.state import AgentState, is_terminal
 from apps.agent_runtime.policies import PROJECT_TABLE_ACTION_INSTRUCTION
-from apps.agent_runtime.response_verification import render_permission_report, render_recent_run_report
+from apps.agent_runtime.response_verification import (
+    VerifierContractError, VerifierModelError, render_permission_report, render_recent_run_report,
+)
 from apps.agent_runtime.tools.definitions import ToolDeniedError, ToolValidationError
 from apps.agent_runtime.tools.executors import (
     BackendToolExecutor,
@@ -264,6 +266,20 @@ class Phase2Nodes(Phase1Nodes):
                 verdict = await asyncio.wait_for(self.response_verifier.verify(state, round_text), timeout=_remaining_seconds(state))
             except (asyncio.TimeoutError, TimeoutError):
                 return fail_run(state, code=ErrorCode.MODEL_TIMEOUT, message="答复事实核验超时，请重试。", stage="verify_response", retryable=True)
+            except VerifierContractError as exc:
+                if exc.usage:
+                    _add_usage(state, exc.usage)
+                _record_model_metrics(state, exc.metrics)
+                return fail_run(state, code=ErrorCode.VERIFIER_CONTRACT_ERROR,
+                    message="答复核验器输出不符合证据合同，草稿未发布；请检查核验器，勿自动重复原操作。",
+                    stage="verify_response", retryable=False)
+            except VerifierModelError as exc:
+                if exc.usage:
+                    _add_usage(state, exc.usage)
+                _record_model_metrics(state, exc.metrics)
+                return fail_run(state, code=ErrorCode.VERIFIER_MODEL_ERROR,
+                    message="答复核验模型调用失败，草稿未发布；请检查模型服务，勿自动重复原操作。",
+                    stage="verify_response", retryable=False)
             except Exception:
                 return fail_run(state, code=ErrorCode.INTERNAL_ERROR, message="答复事实核验未完成，请重试。", stage="verify_response", retryable=True)
             if state.get("cancel_requested"):

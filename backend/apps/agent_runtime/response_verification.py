@@ -93,11 +93,21 @@ class VerifierContractError(ValueError):
 
     code = "verifier_contract_error"
 
+    def __init__(self, message, *, usage=None, metrics=()):
+        super().__init__(message)
+        self.usage = dict(usage or {})
+        self.metrics = tuple(dict(item) for item in metrics)
+
 
 class VerifierModelError(ValueError):
     """The model call failed, separately from invalid verification JSON."""
 
     code = "verifier_model_error"
+
+    def __init__(self, message, *, usage=None, metrics=()):
+        super().__init__(message)
+        self.usage = dict(usage or {})
+        self.metrics = tuple(dict(item) for item in metrics)
 
 
 @dataclass(frozen=True)
@@ -308,15 +318,15 @@ class ModelResponseVerifier:
                 elif str(event.event_type) == str(ModelEventType.CALL_METRICS):
                     metrics.append(dict(event.data or {}))
                 elif str(event.event_type) == str(ModelEventType.ERROR):
-                    raise VerifierModelError("Verification model did not return a verdict")
+                    raise VerifierModelError("Verification model did not return a verdict", usage=usage, metrics=metrics)
                 elif str(event.event_type) == str(ModelEventType.TOOL_CALL_COMPLETED):
-                    raise VerifierContractError("Verification model returned a tool call instead of a verdict")
+                    raise VerifierContractError("Verification model returned a tool call instead of a verdict", usage=usage, metrics=metrics)
             raw = "".join(chunks)
             try:
                 result = replace(validate_verdict(raw, data, usage), metrics=tuple(metrics))
             except (ValueError, TypeError, KeyError) as exc:
                 if attempt:
-                    raise VerifierContractError(str(exc)) from exc
+                    raise VerifierContractError(str(exc), usage=usage, metrics=metrics) from exc
                 request = replace(request, messages=[
                     {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + policy},
                     {"role": "user", "content": content},
@@ -356,15 +366,15 @@ class ModelResponseVerifier:
             elif str(event.event_type) == str(ModelEventType.CALL_METRICS):
                 metrics.append(dict(event.data or {}))
             elif str(event.event_type) == str(ModelEventType.ERROR):
-                raise VerifierModelError("Temporal verifier did not return a verdict")
+                raise VerifierModelError("Temporal verifier did not return a verdict", usage=usage, metrics=metrics)
             elif str(event.event_type) == str(ModelEventType.TOOL_CALL_COMPLETED):
-                raise VerifierContractError("Temporal verifier returned a tool call instead of a verdict")
+                raise VerifierContractError("Temporal verifier returned a tool call instead of a verdict", usage=usage, metrics=metrics)
         try:
             checked = validate_verdict("".join(chunks), data, usage)
             if checked.verdict not in {"supported", "revise"} or checked.claims:
                 raise ValueError("Invalid temporal verdict")
         except (ValueError, TypeError, KeyError) as exc:
-            raise VerifierContractError("Temporal audit: " + str(exc)) from exc
+            raise VerifierContractError("Temporal audit: " + str(exc), usage=usage, metrics=metrics) from exc
         return replace(result if checked.verdict == "supported" else checked, usage=usage, metrics=tuple(metrics))
 
 
