@@ -1,8 +1,10 @@
 import json
+import asyncio
 import unittest
 from bootstrap import setup
 setup()
-from apps.agent_runtime.response_verification import verification_input, validate_verdict
+from apps.agent_runtime.response_verification import verification_input, validate_verdict, ModelResponseVerifier
+from apps.agent_runtime.contracts import ModelEvent
 
 
 def receipt(name="company.table.read", tid="stats", value=20, success=True, call_id="read"):
@@ -17,6 +19,27 @@ def evidence_input(results, draft):
 
 
 class EvidenceFreshnessTests(unittest.TestCase):
+    def test_temporal_audit_rejects_first_pass_mislabel_and_preserves_usage(self):
+        class Gateway:
+            purposes = []
+            async def stream(self, request):
+                self.purposes.append(request.purpose)
+                if request.purpose == "response_verification":
+                    value = {"verdict": "supported", "issues": [], "claims": [{"text": "当前人数为20",
+                        "kind": "historical_company_fact", "evidence": [{"source_id": "tool:read:table", "quote": "20"}]}]}
+                else:
+                    value = {"verdict": "revise", "issues": ["历史读取不能证明冲突后的当前人数"], "claims": []}
+                yield ModelEvent("text_delta", {"delta": json.dumps(value)})
+                yield ModelEvent("usage", {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        gateway = Gateway()
+        state = {"run_id": "r", "config": {"permission_facts": {}, "model_provider": "fake",
+            "model_name": "fake", "credential_ref": "none"}, "tool_results": [receipt(),
+                receipt("company.table.write", success=False, call_id="conflict")]}
+        result = asyncio.run(ModelResponseVerifier(gateway).verify(state, "当前人数为20"))
+        self.assertEqual(result.verdict, "revise")
+        self.assertEqual(result.usage["total_tokens"], 4)
+        self.assertEqual(gateway.purposes, ["response_verification", "response_temporal_verification"])
+
     def test_old_current_claim_is_rejected_but_historical_claim_has_evidence(self):
         results = [receipt(), receipt("company.table.write", success=False, call_id="conflict")]
         for kind, draft in (("company_fact", "当前人数为20"), ("historical_company_fact", "上次读取人数为20")):
