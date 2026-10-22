@@ -1,5 +1,7 @@
 # Agent 架构研究与评测
 
+2026-10-22新增[本地数据库验证与写前拒绝修正](experiments/2026-10-22-local-databases.md)：PostgreSQL/psql 18.6本地TLS连接与真实行锁2场景通过，179项离线检查通过；immudb v1.11.2已下载校验，但启动被Windows应用控制阻止，真实双库测试仍不可用。综合分支solution/local-storage-20261022保留严格unknown门禁，仅准确区分8处明确的写前参数拒绝。
+
 2026-10-22新增[分支对照与综合方案](experiments/2026-10-22-harness-study.md)：隔离比较合同修复、证据作用域与组合，保留端到端回归和语义反例；综合实现增加可信unknown变更硬停、故障分流、失败用量及续跑指纹。静态最高分组合保持显式实验，未部署。来源见[一手资料核查](experiments/2026-10-22-harness-sources.md)。
 
 同日[引用与语义核验后续对照](experiments/2026-10-22-verifier-followup.md)在四个独立分支测试原文分块、专用事实核验、短引用与修复片段目录。目录修复3条构造引用故障，但公开核验没有整体收益，完整冲突交付下降；均保留实验，不替换综合默认。综合复核分支为solution/harness-reviewed-20261022，167项离线检查通过。
