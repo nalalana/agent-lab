@@ -174,3 +174,9 @@ python lab/run_eval.py --concurrency 2 --repeat 1
 PostgreSQL测试已按用户要求停止。`python lab/run_conflict_recovery.py --output lab/results/<新目录>` 使用原Phase2图、真实模型和独立SQLite工具夹具，检查先读后改、条件变化保留他人数据及冲突重试上限；不连接外部数据库。`python lab/test_conflict_recovery.py` 验证夹具冲突与提交行为。
 
 首轮6项数据状态合同全部满足，但审阅发现连续冲突后模型将过期读取值当作当前值，校验器误放行。机械通过与语义正确必须分开，见[真实模型冲突恢复报告](experiments/2026-10-22-conflict-recovery.md)。
+
+### 表格证据时间归属（2026-10-22）
+
+旧读取遇到后续同表操作后标记为historical_table_content，历史声明与当前事实分开引用；存在历史表格证据时，对首轮批准的整段回答增加时间归属审核。新读取可提供新的观察，其他表操作不使本表证据失效。`python lab/test_evidence_freshness.py` 验证来源与审核合同；`python lab/run_freshness_eval.py --output lab/results/<新目录>` 调用真实校验模型，不连接数据库。
+
+最终6个完整场景未再发现旧值冒充当前值，固定草稿7/8正确，仍误拒1条正确不确定性说明。额外审核增加成本，尚未推广生产，详见[证据新鲜度报告](experiments/2026-10-22-evidence-freshness.md)。
