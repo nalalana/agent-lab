@@ -189,6 +189,14 @@ PostgreSQL测试已按用户要求停止。`python lab/run_conflict_recovery.py 
 
 最终6个完整场景未再发现旧值冒充当前值，固定草稿7/8正确，仍误拒1条正确不确定性说明。额外审核增加成本，尚未推广生产，详见[证据新鲜度报告](experiments/2026-10-22-evidence-freshness.md)。
 
+### 本地 PostgreSQL + immudb 集成诊断入口
+
+`python lab/run_realdb_integration.py --config lab/.realdb.local.json --output lab/results/<新目录>` 仅接受显式本地 JSON；该配置路径已忽略。必须包含 `AGENT_LAB_PG_ENABLED="1"`、`AGENT_LAB_IMMUDB_ENABLED="1"`，以及两个完整前缀下的 `HOST`、`PORT`、`USER`、`PASSWORD`。另需显式 `AGENT_LAB_PG_DATABASE` 为 `agent_lab_test` 或 `test_` 开头的已有测试库，复用原 PG 入口检查。两种 HOST 均限制为 loopback，PG 强制 TLS require；immudb 使用本地 gRPC。建议端口分别为 55432、53322，禁止填生产凭据。
+
+该入口复用原 PG 锁流程、source-extracted OpenGate/ImmudbService 方法、生产 toumingClient 和实际 SDK。生成独立 PG schema、`test_<UUID>` immudb 数据库和 UUID 表，最终清理。覆盖两个顺序的锁竞争与过期拒绝、正常写/清空、实际提交后 SDK 丢确认、第二单元格被真实序列化器拒绝后的部分提交。输出记录 PG 审计/版本和远端事实，确认 unknown 不等于未提交；不会尝试自动补偿或把跨库非原子行为称为解决。
+
+IAM/审核仍为允许夹具，持久 unknown 拦重放使用 lab-only SQLite journal，不是生产对账实现，也未覆盖完整 runtime/SSE/recorder。连接不可用时返回 unavailable/非零，无替身回退；`python lab/test_realdb_runner.py` 仅检查离线配置、SDK 故障边界与原服务合同，不能充当真实双库通过结果。
+
 ### 冻结迁移诊断（2026-10-22）
 
 `python lab/run_freshness_eval.py --transfer --output lab/results/<新目录>` 使用12条运行前冻结的新样本，覆盖不同表、中英文、混合表格、未知清空、刷新超时、引用与单元格注入。当前验证器未据此调参。首轮11/12正确：错误声明6/6拒绝，正确草稿5/6批准，误拒1条；19次模型调用、37713 token。详见[迁移诊断报告](experiments/2026-10-22-freshness-transfer.md)，不等于公开基准或端到端业务成绩。

@@ -91,3 +91,4 @@ dist/
 *.bak.*
 backend/.env.dev
 /lab/.postgres.local.json
+/lab/.realdb.local.json
