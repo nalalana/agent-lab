@@ -180,3 +180,7 @@ PostgreSQL测试已按用户要求停止。`python lab/run_conflict_recovery.py 
 旧读取遇到后续同表操作后标记为historical_table_content，历史声明与当前事实分开引用；存在历史表格证据时，对首轮批准的整段回答增加时间归属审核。新读取可提供新的观察，其他表操作不使本表证据失效。`python lab/test_evidence_freshness.py` 验证来源与审核合同；`python lab/run_freshness_eval.py --output lab/results/<新目录>` 调用真实校验模型，不连接数据库。
 
 最终6个完整场景未再发现旧值冒充当前值，固定草稿7/8正确，仍误拒1条正确不确定性说明。额外审核增加成本，尚未推广生产，详见[证据新鲜度报告](experiments/2026-10-22-evidence-freshness.md)。
+
+### 冻结迁移诊断（2026-10-22）
+
+`python lab/run_freshness_eval.py --transfer --output lab/results/<新目录>` 使用12条运行前冻结的新样本，覆盖不同表、中英文、混合表格、未知清空、刷新超时、引用与单元格注入。当前验证器未据此调参。首轮11/12正确：错误声明6/6拒绝，正确草稿5/6批准，误拒1条；19次模型调用、37713 token。详见[迁移诊断报告](experiments/2026-10-22-freshness-transfer.md)，不等于公开基准或端到端业务成绩。
