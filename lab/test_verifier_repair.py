@@ -45,7 +45,7 @@ def table_state(historical=False):
 class VerifierRepairTests(unittest.TestCase):
     def verify(self, responses, draft="**人数20**。", current=None, suffix=""):
         gateway = Gateway(responses)
-        result = asyncio.run(ModelResponseVerifier(gateway, prompt_suffix=suffix).verify(current or table_state(), draft))
+        result = asyncio.run(ModelResponseVerifier(gateway, prompt_suffix=suffix, strategy="combined").verify(current or table_state(), draft))
         return result, gateway
 
     def test_local_excerpt_source_and_quote_faults_can_be_repaired_without_changing_input(self):
@@ -76,7 +76,7 @@ class VerifierRepairTests(unittest.TestCase):
         invalid = verdict(claims=[claim("**人数20**", "company_fact", "tool:read:table", "999")])
         gateway = Gateway([("response_verification", invalid)] * 2)
         with self.assertRaises(VerifierContractError) as failure:
-            asyncio.run(ModelResponseVerifier(gateway).verify(table_state(), "**人数20**。"))
+            asyncio.run(ModelResponseVerifier(gateway, strategy="combined").verify(table_state(), "**人数20**。"))
         self.assertEqual(failure.exception.code, "verifier_contract_error")
         self.assertEqual(len(gateway.requests), 2)
 
@@ -84,7 +84,7 @@ class VerifierRepairTests(unittest.TestCase):
         bad = verdict(claims=[claim("**人数20**", "operation", "tool:read:table", "20")])
         gateway = Gateway([("response_verification", bad)] * 2)
         with self.assertRaises(VerifierContractError):
-            asyncio.run(ModelResponseVerifier(gateway).verify(table_state(), "**人数20**。"))
+            asyncio.run(ModelResponseVerifier(gateway, strategy="combined").verify(table_state(), "**人数20**。"))
         first = json.loads(gateway.requests[0].messages[1]["content"])
         second = json.loads(gateway.requests[1].messages[1]["content"])
         self.assertEqual(first["sources"], second["sources"])
@@ -106,20 +106,20 @@ class VerifierRepairTests(unittest.TestCase):
     def test_transport_error_is_not_a_contract_repair_or_a_draft_rejection(self):
         gateway = Gateway([("response_verification", ModelEvent("error", {"code": "unavailable"}))])
         with self.assertRaises(VerifierModelError) as failure:
-            asyncio.run(ModelResponseVerifier(gateway).verify(table_state(), "人数20"))
+            asyncio.run(ModelResponseVerifier(gateway, strategy="combined").verify(table_state(), "人数20"))
         self.assertEqual(failure.exception.code, "verifier_model_error")
         self.assertEqual(len(gateway.requests), 1)
         timeout = TimeoutError("transport deadline")
         gateway = Gateway([("response_verification", timeout)])
         with self.assertRaises(TimeoutError) as failure:
-            asyncio.run(ModelResponseVerifier(gateway).verify(table_state(), "人数20"))
+            asyncio.run(ModelResponseVerifier(gateway, strategy="combined").verify(table_state(), "人数20"))
         self.assertIs(failure.exception, timeout)
         self.assertEqual(len(gateway.requests), 1)
 
     def test_tool_call_is_an_output_contract_error(self):
         gateway = Gateway([("response_verification", ModelEvent("tool_call_completed", {"name": "write"}))])
         with self.assertRaises(VerifierContractError):
-            asyncio.run(ModelResponseVerifier(gateway).verify(table_state(), "人数20"))
+            asyncio.run(ModelResponseVerifier(gateway, strategy="combined").verify(table_state(), "人数20"))
         self.assertEqual(len(gateway.requests), 1)
 
     def test_temporal_contract_failure_never_restarts_the_main_verifier(self):
@@ -129,7 +129,7 @@ class VerifierRepairTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 gateway = Gateway([("response_verification", historical), ("response_temporal_verification", invalid)])
                 with self.assertRaises(VerifierContractError) as failure:
-                    asyncio.run(ModelResponseVerifier(gateway).verify(table_state(True), "上次读取人数20"))
+                    asyncio.run(ModelResponseVerifier(gateway, strategy="combined").verify(table_state(True), "上次读取人数20"))
                 self.assertIn("Temporal audit", str(failure.exception))
                 self.assertEqual([r.purpose for r in gateway.requests], ["response_verification", "response_temporal_verification"])
 
@@ -160,7 +160,7 @@ class VerifierRepairTests(unittest.TestCase):
         gateway = Gateway(responses)
         question = "解释知识库"
         context = {"config": config(question), "model_messages": [{"role": "user", "content": question}]}
-        facade = Phase2AgentRuntimeFacade(gateway, response_verifier=ModelResponseVerifier(gateway), context_resolver=lambda _: context)
+        facade = Phase2AgentRuntimeFacade(gateway, response_verifier=ModelResponseVerifier(gateway, strategy="combined"), context_resolver=lambda _: context)
         request = RunRequest("repair-test", "company", "agent", "user", "session", "agent_test", "message", "zh-CN", "trace")
 
         async def collect():

@@ -17,6 +17,8 @@ def summarize(root):
     results = {}
     for path in sorted(root.glob("*/*/summary.json")):
         summary = json.loads(path.read_text(encoding="utf-8"))
+        if summary.get("remaining", 0):
+            continue
         trials = [json.loads(s) for s in (path.parent / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
         name = path.parent.parent.name + "/" + path.parent.name
         durations = sorted(r["seconds"] for r in trials)

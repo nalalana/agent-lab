@@ -286,12 +286,17 @@ def validate_verdict(raw: str, data: dict, usage=None) -> VerificationResult:
 class ModelResponseVerifier:
     build_input = staticmethod(verification_input)
 
-    def __init__(self, model_gateway, *, prompt_suffix=""):
+    def __init__(self, model_gateway, *, prompt_suffix="", strategy="evidence_scope"):
+        if strategy not in {"baseline", "contract_repair", "evidence_scope", "combined"}:
+            raise ValueError("Unknown verification strategy")
         self.model_gateway = model_gateway
         self.prompt_suffix = prompt_suffix
+        self.strategy = strategy
 
     async def verify(self, state, draft: str) -> VerificationResult:
         data, images = self.build_input(state, draft)
+        if self.strategy not in {"evidence_scope", "combined"}:
+            data = {key: value for key, value in data.items() if key != "table_evidence_scope"}
         config = state["config"]
         content = [{"type": "text", "text": _json(data)}, *images] if images else _json(data)
         policy = VERIFICATION_PROMPT + self.prompt_suffix + ("\n" + TABLE_SCOPE_GUIDANCE if data.get("table_evidence_scope") else "")
@@ -327,12 +332,19 @@ class ModelResponseVerifier:
             except (ValueError, TypeError, KeyError) as exc:
                 if attempt:
                     raise VerifierContractError(str(exc), usage=usage, metrics=metrics) from exc
-                request = replace(request, messages=[
-                    {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + policy},
-                    {"role": "user", "content": content},
-                    {"role": "user", "content": _json({"previous_output": raw,
-                        "contract_error": {"code": VerifierContractError.code, "detail": str(exc)}})},
-                ])
+                if self.strategy in {"contract_repair", "combined"}:
+                    messages = [
+                        {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + policy},
+                        {"role": "user", "content": content},
+                        {"role": "user", "content": _json({"previous_output": raw,
+                            "contract_error": {"code": VerifierContractError.code, "detail": str(exc)}})},
+                    ]
+                else:
+                    messages = [*request.messages,
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": "Your verification object failed the evidence contract: " + str(exc) + ". Re-evaluate the SAME draft and original request against the SAME sources. Return a valid verdict. Do not invent sources or quotations; do not change the draft. A formatting or excerpt mismatch in your own previous JSON is NOT an error in the draft: repair your exact quotations. Never return revise solely to report your own schema or citation formatting error. Permission clarification alone requires permission_report. If any claim has no valid evidence return revise, not supported."},
+                    ]
+                request = replace(request, messages=messages)
             else:
                 break
         # Temporal audit failures must not restart the main verifier or consume
