@@ -15,10 +15,17 @@ class ConflictRecoveryTests(unittest.TestCase):
                 replace(context, expected_table_version=version)))
         try:
             args = {"tid": "stats", "cells": [{"r": 0, "c": 1, "value": 15}]}
-            self.assertEqual(execute("company.table.write", args).error_code, "TABLE_READ_REQUIRED")
+            rejected = execute("company.table.write", args)
+            self.assertEqual(rejected.error_code, "TABLE_READ_REQUIRED")
+            self.assertEqual((rejected.execution_status, rejected.business_outcome), ("not_dispatched", "not_attempted"))
+            self.assertFalse(rejected.success)
+            self.assertEqual((env.agent_commits, env.snapshot()[0][1]), (0, 12))
             receipt = json.loads(execute("company.table.read", {"tid": "stats"}).content)
             version = receipt["data"]["table_version"]
-            self.assertEqual(execute("company.table.write", args, version).error_code, "TABLE_WRITE_CONFLICT")
+            conflict = execute("company.table.write", args, version)
+            self.assertEqual(conflict.error_code, "TABLE_WRITE_CONFLICT")
+            self.assertEqual((conflict.execution_status, conflict.business_outcome), ("returned", "conflict"))
+            self.assertFalse(conflict.success)
             self.assertEqual(env.snapshot()[0][1], 20)
             self.assertEqual(execute("company.table.write", args, version).error_code, "TABLE_WRITE_CONFLICT")
             self.assertEqual(env.agent_commits, 0)
@@ -37,6 +44,8 @@ class ConflictRecoveryTests(unittest.TestCase):
                 request = ToolRequest("company.table.clear_cells", {"tid": "stats", "cells": [{"r": 0, "c": 1}]}, 5)
                 result = asyncio.run(env.execute(env.registry.get(request.name), request, context))
                 self.assertEqual(result.error_code, "TABLE_WRITE_CONFLICT")
+                self.assertEqual((result.execution_status, result.business_outcome), ("returned", "conflict"))
+                self.assertFalse(result.success)
             self.assertEqual((env.conflicts, env.agent_commits, env.snapshot()[0][1]), (2, 0, 21))
         finally:
             env.db.close()
