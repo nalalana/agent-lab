@@ -285,6 +285,7 @@ def validate_verdict(raw: str, data: dict, usage=None) -> VerificationResult:
 
 class ModelResponseVerifier:
     build_input = staticmethod(verification_input)
+    policy_prompt = VERIFICATION_PROMPT
 
     def __init__(self, model_gateway, *, prompt_suffix="", strategy="evidence_scope"):
         if strategy not in {"baseline", "contract_repair", "evidence_scope", "combined"}:
@@ -299,7 +300,7 @@ class ModelResponseVerifier:
             data = {key: value for key, value in data.items() if key != "table_evidence_scope"}
         config = state["config"]
         content = [{"type": "text", "text": _json(data)}, *images] if images else _json(data)
-        policy = VERIFICATION_PROMPT + self.prompt_suffix + ("\n" + TABLE_SCOPE_GUIDANCE if data.get("table_evidence_scope") else "")
+        policy = self.policy_prompt + self.prompt_suffix + ("\n" + TABLE_SCOPE_GUIDANCE if data.get("table_evidence_scope") else "")
         request = ModelRequest(
             run_id=state["run_id"], provider=config["model_provider"], model=config["model_name"],
             messages=[{"role": "system", "content": policy}, {"role": "user", "content": content}],
