@@ -1,9 +1,17 @@
 import unittest
 from build_eval_corpus import synthetic
 from prepare_harness_study import select
+from summarize_harness_study import paired
 
 
 class StudySelectionTests(unittest.TestCase):
+    def test_paired_comparison_preserves_improvements_and_regressions(self):
+        before = [{"id": "a", "correct": False}, {"id": "b", "correct": True}]
+        after = [{"id": "b", "correct": False}, {"id": "a", "correct": True}]
+        self.assertEqual(paired(before, after), {"improved": ["a"], "regressed": ["b"]})
+        with self.assertRaises(ValueError):
+            paired(before, after[:1])
+
     def test_complete_balanced_entity_groups_and_disjoint_splits(self):
         rows = list(synthetic())
         dev = select([r for r in rows if r["split"] == "dev"], "synthetic", 2)
