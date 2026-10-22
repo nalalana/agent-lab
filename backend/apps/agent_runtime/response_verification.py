@@ -293,6 +293,19 @@ class ModelResponseVerifier:
         self.prompt_suffix = prompt_suffix
         self.strategy = strategy
 
+    def repair_messages(self, request, data, raw, error):
+        if self.strategy in {"contract_repair", "combined"}:
+            return [
+                {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + request.messages[0]["content"]},
+                request.messages[1],
+                {"role": "user", "content": _json({"previous_output": raw,
+                    "contract_error": {"code": VerifierContractError.code, "detail": str(error)}})},
+            ]
+        return [*request.messages,
+            {"role": "assistant", "content": raw},
+            {"role": "user", "content": "Your verification object failed the evidence contract: " + str(error) + ". Re-evaluate the SAME draft and original request against the SAME sources. Return a valid verdict. Do not invent sources or quotations; do not change the draft. A formatting or excerpt mismatch in your own previous JSON is NOT an error in the draft: repair your exact quotations. Never return revise solely to report your own schema or citation formatting error. Permission clarification alone requires permission_report. If any claim has no valid evidence return revise, not supported."},
+        ]
+
     async def verify(self, state, draft: str) -> VerificationResult:
         data, images = self.build_input(state, draft)
         if self.strategy not in {"evidence_scope", "combined"}:
@@ -332,19 +345,7 @@ class ModelResponseVerifier:
             except (ValueError, TypeError, KeyError) as exc:
                 if attempt:
                     raise VerifierContractError(str(exc), usage=usage, metrics=metrics) from exc
-                if self.strategy in {"contract_repair", "combined"}:
-                    messages = [
-                        {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + policy},
-                        {"role": "user", "content": content},
-                        {"role": "user", "content": _json({"previous_output": raw,
-                            "contract_error": {"code": VerifierContractError.code, "detail": str(exc)}})},
-                    ]
-                else:
-                    messages = [*request.messages,
-                        {"role": "assistant", "content": raw},
-                        {"role": "user", "content": "Your verification object failed the evidence contract: " + str(exc) + ". Re-evaluate the SAME draft and original request against the SAME sources. Return a valid verdict. Do not invent sources or quotations; do not change the draft. A formatting or excerpt mismatch in your own previous JSON is NOT an error in the draft: repair your exact quotations. Never return revise solely to report your own schema or citation formatting error. Permission clarification alone requires permission_report. If any claim has no valid evidence return revise, not supported."},
-                    ]
-                request = replace(request, messages=messages)
+                request = replace(request, messages=self.repair_messages(request, data, raw, exc))
             else:
                 break
         # Temporal audit failures must not restart the main verifier or consume
