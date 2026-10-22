@@ -62,7 +62,7 @@ def synthetic(groups=100, seed=20261022):
                             "config": {"permission_facts": {}, "user_text": request}, "tool_results": results}}
 
 
-def public_rows(dataset, results_root, partitions):
+def public_rows(dataset, results_root, partitions, audit_snapshot=None):
     sources = {s["source_id"]: s for s in map(json.loads, (dataset / "dataset/source_info.jsonl").read_text(encoding="utf-8").splitlines())}
     responses = [r for r in map(json.loads, (dataset / "dataset/response.jsonl").read_text(encoding="utf-8").splitlines()) if r["quality"] == "good"]
     by_id = {r["id"]: r for r in responses}
@@ -73,7 +73,7 @@ def public_rows(dataset, results_root, partitions):
         group[sid] = digest(body)
     seen = set()
     scanned = []
-    for path in sorted(results_root.rglob("manifest.json")):
+    for path in ([] if audit_snapshot else sorted(results_root.rglob("manifest.json"))):
         data = json.loads(path.read_text(encoding="utf-8"))
         is_corpus_run = data.get("identity", {}).get("dataset") == "ragtruth"
         if "ragtruth" not in str(data.get("kind", "")).lower() and not is_corpus_run:
@@ -90,6 +90,10 @@ def public_rows(dataset, results_root, partitions):
     reserved = {by_id[r]["source_id"] for r in prior["partitions"]["holdout"]["response_ids"]}
     # Prior dev IDs are also treated as exposed even if a local result was removed.
     seen.update(by_id[r]["source_id"] for r in prior["partitions"]["dev"]["response_ids"])
+    if audit_snapshot:
+        seen = set(audit_snapshot["exposed_source_ids"])
+        reserved = set(audit_snapshot["reserved_source_ids"])
+        scanned = audit_snapshot["prior_manifests"]
     excluded_groups = {group[s] for s in seen | reserved}
     upstream = defaultdict(set)
     for r in responses:
@@ -141,10 +145,17 @@ def audit_rows(rows):
     return {"unique_ids": len(ids), "groups": len(groups), "group_leakage": 0, "exact_input_leakage": 0}
 
 
-def build(output):
+def build(output, audit_lock=None):
     if output.exists():
         raise ValueError("Output already exists; corpus is immutable")
-    rag, audit = public_rows(DATASET, ROOT / "lab/results", ROOT / "lab/ragtruth-partitions.json")
+    snapshot = None
+    if audit_lock:
+        locked = json.loads(audit_lock.read_text(encoding="utf-8"))
+        for name, expected in locked["public_file_hashes"].items():
+            if hashlib.sha256((DATASET / "dataset" / name).read_bytes()).hexdigest() != expected:
+                raise ValueError("Pinned public dataset changed")
+        snapshot = locked["contamination_audit"]
+    rag, audit = public_rows(DATASET, ROOT / "lab/results", ROOT / "lab/ragtruth-partitions.json", snapshot)
     rows = [*synthetic(), *rag]
     integrity = audit_rows(rows)
     output.mkdir(parents=True)
@@ -170,4 +181,6 @@ def build(output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "lab/datasets/agent-eval-v2")
-    build(parser.parse_args().output)
+    parser.add_argument("--audit-lock", type=Path, help="Rebuild the exact frozen contamination exclusions")
+    args = parser.parse_args()
+    build(args.output, args.audit_lock)

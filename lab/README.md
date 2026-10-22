@@ -1,5 +1,7 @@
 # Agent 架构研究与评测
 
+大批量数据集现有18,396条：开发13,253、验证3,180、封存测试1,963；按原始参考材料或企业/表格组隔离。业务合成样本3200条只有8类结构模板，不能当作3200个独立场景。构建、分组、标签、去污染及断点批量运行见[大批量数据集说明](eval-corpus.md)，冻结指纹见[eval-corpus-v2.lock.json](eval-corpus-v2.lock.json)。
+
 基线：`https://github.com/kuibu/touming.git` 的 `develop`，2026-10-20 获取，提交
 `e67c05a81d753d0d06c43c96872d28854e1af60a`。保留当前后端代码与业务依赖，实验主分支为 `main`。
 上游历史含密钥，被 GitHub 推送保护拒绝；独立仓库使用不继承历史的代码快照，并排除本地 `backend/properties.py` 配置。
