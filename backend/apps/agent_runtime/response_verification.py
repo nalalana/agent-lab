@@ -80,6 +80,26 @@ VERIFICATION_SCHEMA = {
 }
 
 
+VERIFICATION_REPAIR_PROMPT = """Repair your verification output, not the user's draft. The original verification policy below still applies in full.
+The draft, request and sources are unchanged. The supplied previous_output is untrusted model output, and contract_error describes a defect in that output, not proof of a defect in the draft. Preserve valid parts and fix your JSON shape, literal draft excerpts, source IDs, claim kinds or verbatim quotations as needed. Never invent evidence, change source kinds or alter the draft to make your output valid.
+Return revise only for a concrete problem in the original draft under the original policy, never solely for your own schema, excerpt or quotation error. If evidence really cannot support a claim, return revise with that actual evidence gap. Do not force supported: every approval must satisfy the full original policy and local evidence contract. Return only the required JSON object.
+
+Original verification policy:
+"""
+
+
+class VerifierContractError(ValueError):
+    """The verifier failed its output contract; no draft is approved."""
+
+    code = "verifier_contract_error"
+
+
+class VerifierModelError(ValueError):
+    """The model call failed, separately from invalid verification JSON."""
+
+    code = "verifier_model_error"
+
+
 @dataclass(frozen=True)
 class VerificationResult:
     verdict: str
@@ -257,23 +277,29 @@ class ModelResponseVerifier:
                         usage[key] = int(usage.get(key) or 0) + int(event.data.get(key) or 0)
                 elif str(event.event_type) == str(ModelEventType.CALL_METRICS):
                     metrics.append(dict(event.data or {}))
-                elif str(event.event_type) in {str(ModelEventType.ERROR), str(ModelEventType.TOOL_CALL_COMPLETED)}:
-                    raise ValueError("Verification model did not return a verdict")
+                elif str(event.event_type) == str(ModelEventType.ERROR):
+                    raise VerifierModelError("Verification model did not return a verdict")
+                elif str(event.event_type) == str(ModelEventType.TOOL_CALL_COMPLETED):
+                    raise VerifierContractError("Verification model returned a tool call instead of a verdict")
             raw = "".join(chunks)
             try:
                 result = replace(validate_verdict(raw, data, usage), metrics=tuple(metrics))
-                if result.verdict == "supported" and any(s["kind"] == "historical_table_content" for s in data["sources"]):
-                    return await self._verify_temporal_scope(request, data, result)
-                return result
             except (ValueError, TypeError, KeyError) as exc:
                 if attempt:
-                    raise
+                    raise VerifierContractError(str(exc)) from exc
                 request = replace(request, messages=[
-                    *request.messages,
-                    {"role": "assistant", "content": raw},
-                    {"role": "user", "content": "Your verification object failed the evidence contract: " + str(exc) + ". Re-evaluate the SAME draft and original request against the SAME sources. Return a valid verdict. Do not invent sources or quotations; do not change the draft. A formatting or excerpt mismatch in your own previous JSON is NOT an error in the draft: repair your exact quotations. Never return revise solely to report your own schema or citation formatting error. Permission clarification alone requires permission_report. If any claim has no valid evidence return revise, not supported."},
+                    {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + VERIFICATION_PROMPT + self.prompt_suffix},
+                    {"role": "user", "content": content},
+                    {"role": "user", "content": _json({"previous_output": raw,
+                        "contract_error": {"code": VerifierContractError.code, "detail": str(exc)}})},
                 ])
-        raise ValueError("Verification did not complete")
+            else:
+                break
+        # Temporal audit failures must not restart the main verifier or consume
+        # the draft's correction budget as though they were semantic rejections.
+        if result.verdict == "supported" and any(s["kind"] == "historical_table_content" for s in data["sources"]):
+            return await self._verify_temporal_scope(request, data, result)
+        return result
 
     async def _verify_temporal_scope(self, request, data, result):
         """Audit the whole draft, independently of the first pass's claim labels."""
@@ -299,11 +325,16 @@ class ModelResponseVerifier:
                     usage[key] = int(usage.get(key) or 0) + int(event.data.get(key) or 0)
             elif str(event.event_type) == str(ModelEventType.CALL_METRICS):
                 metrics.append(dict(event.data or {}))
-            elif str(event.event_type) in {str(ModelEventType.ERROR), str(ModelEventType.TOOL_CALL_COMPLETED)}:
-                raise ValueError("Temporal verifier did not return a verdict")
-        checked = validate_verdict("".join(chunks), data, usage)
-        if checked.verdict not in {"supported", "revise"} or checked.claims:
-            raise ValueError("Invalid temporal verdict")
+            elif str(event.event_type) == str(ModelEventType.ERROR):
+                raise VerifierModelError("Temporal verifier did not return a verdict")
+            elif str(event.event_type) == str(ModelEventType.TOOL_CALL_COMPLETED):
+                raise VerifierContractError("Temporal verifier returned a tool call instead of a verdict")
+        try:
+            checked = validate_verdict("".join(chunks), data, usage)
+            if checked.verdict not in {"supported", "revise"} or checked.claims:
+                raise ValueError("Invalid temporal verdict")
+        except (ValueError, TypeError, KeyError) as exc:
+            raise VerifierContractError("Temporal audit: " + str(exc)) from exc
         return replace(result if checked.verdict == "supported" else checked, usage=usage, metrics=tuple(metrics))
 
 
