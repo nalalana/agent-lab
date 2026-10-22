@@ -2,7 +2,7 @@
 
 大批量数据集现有18,396条：开发13,253、验证3,180、封存测试1,963；按原始参考材料或企业/表格组隔离。业务合成样本3200条只有8类结构模板，不能当作3200个独立场景。构建、分组、标签、去污染及断点批量运行见[大批量数据集说明](eval-corpus.md)，冻结指纹见[eval-corpus-v2.lock.json](eval-corpus-v2.lock.json)。
 
-Harness下一阶段合同与现有调用链映射见[harness-contracts.md](harness-contracts.md)。已先统一核心图返回失败/抛异常的恢复指导：版本冲突先重读并核对意图，未知写入维持硬停止；没有新增自动重试。执行/业务双轴结果、共享证据视图和校验器故障分流仍为待实施设计。
+Harness下一阶段合同与现有调用链映射见[harness-contracts.md](harness-contracts.md)。已统一失败恢复指导并开始迁移公司表格的执行/业务双轴回执：请求returned不等于业务succeeded，未知写入维持硬停止，没有新增自动重试。111项本地检查与6条真实模型合同冒烟通过，见[回执迁移报告](experiments/2026-10-22-outcome-metadata.md)。共享证据视图、其他工具迁移及校验器故障分流仍待实施。
 
 基线：`https://github.com/kuibu/touming.git` 的 `develop`，2026-10-20 获取，提交
 `e67c05a81d753d0d06c43c96872d28854e1af60a`。保留当前后端代码与业务依赖，实验主分支为 `main`。
