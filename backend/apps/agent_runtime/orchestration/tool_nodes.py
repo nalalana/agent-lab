@@ -429,39 +429,32 @@ class Phase2Nodes(Phase1Nodes):
                 result = await asyncio.wait_for(self.backend_executor.execute(definition, request, context), timeout=request.timeout_seconds)
             elif definition.executor == "sandbox":
                 if self.sandbox_executor is None:
-                    raise ToolExecutionError(code=str(ErrorCode.SANDBOX_CREATE_FAILED), message="沙箱执行器不可用", retryable=True)
+                    raise ToolExecutionError(code=str(ErrorCode.SANDBOX_CREATE_FAILED), message="沙箱执行器不可用", retryable=True,
+                        execution_status="not_dispatched", business_outcome="not_attempted")
                 result = await asyncio.wait_for(self.sandbox_executor.execute(definition, request, context), timeout=request.timeout_seconds)
             else:
-                raise ToolExecutionError(code=str(ErrorCode.TOOL_DENIED), message="工具执行器不可用", retryable=False)
+                raise ToolExecutionError(code=str(ErrorCode.TOOL_DENIED), message="工具执行器不可用", retryable=False,
+                    execution_status="not_dispatched", business_outcome="not_attempted")
         except (asyncio.TimeoutError, TimeoutError):
             code = (ErrorCode.OPERATION_OUTCOME_UNKNOWN if request.name in {
                 "company.table.write", "company.table.clear_cells"} else ErrorCode.SANDBOX_TIMEOUT)
             duration_ms = int((time.monotonic() - started) * 1000)
-            await _call_recorder(self.tool_recorder.failed, tool_call_id=context.tool_call_id, error_code=str(code), duration_ms=duration_ms)
-            append_event(state, RunEventType.TOOL_FAILED, {
-                "tool_call_id": context.tool_call_id,
-                "tool_name": pending.get("name"),
-                "code": str(code),
-                "message": "工具执行超时",
-            })
-            _append_tool_failure_result(state, pending=pending, code=str(code), message="工具执行超时")
+            failure = _append_tool_failure_result(state, pending=pending, code=str(code), message="工具执行超时")
+            await _call_recorder(self.tool_recorder.failed, tool_call_id=context.tool_call_id,
+                error_code=failure["error_code"], duration_ms=duration_ms)
             return state
         except ToolExecutionError as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
-            await _call_recorder(self.tool_recorder.failed, tool_call_id=context.tool_call_id, error_code=exc.code, duration_ms=duration_ms)
-            append_event(state, RunEventType.TOOL_FAILED, {
-                "tool_call_id": context.tool_call_id,
-                "tool_name": pending.get("name"),
-                "code": exc.code,
-                "message": exc.safe_message,
-            })
-            _append_tool_failure_result(state, pending=pending, code=exc.code, message=exc.safe_message,
+            failure = _append_tool_failure_result(state, pending=pending, code=exc.code, message=exc.safe_message,
                 retryable=exc.retryable, execution_status=exc.execution_status, business_outcome=exc.business_outcome)
+            await _call_recorder(self.tool_recorder.failed, tool_call_id=context.tool_call_id,
+                error_code=failure["error_code"], duration_ms=duration_ms)
             return state
 
         duration_ms = int((time.monotonic() - started) * 1000)
         completed = state.setdefault("completed_tool_call_keys", set())
-        outcome_unknown = str(result.error_code or "") == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN)
+        code, metadata = _tool_outcome(definition, result.error_code, result.execution_status, result.business_outcome)
+        outcome_unknown = str(code or "") == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN)
         if not outcome_unknown:
             completed.add(str(pending.get("dedupe_key")))
         tool_result = {
@@ -470,15 +463,12 @@ class Phase2Nodes(Phase1Nodes):
             "name": str(pending.get("name") or ""),
             "content": result.content,
             "arguments": dict(pending.get("arguments") or {}),
-            "error_code": result.error_code,
+            "error_code": code,
             "success": result.success and not outcome_unknown,
             "artifact_refs": list(result.artifact_refs),
             "retryable": result.retryable and not outcome_unknown,
-            "execution_status": "unconfirmed" if outcome_unknown else result.execution_status,
-            "business_outcome": "unknown" if outcome_unknown else result.business_outcome,
-            "effect_class": getattr(definition, "effect_class", "unknown"),
+            **metadata,
         }
-        metadata = {k: tool_result[k] for k in ("execution_status", "business_outcome", "effect_class")}
         try:
             payload = json.loads(tool_result["content"])
         except (TypeError, ValueError):
@@ -486,7 +476,7 @@ class Phase2Nodes(Phase1Nodes):
         payload = dict(payload) if isinstance(payload, dict) else {"result": payload}
         payload["runtime_outcome"] = metadata
         if not tool_result["success"]:
-            recovery = recovery_policy(str(result.error_code or ErrorCode.INTERNAL_ERROR))
+            recovery = recovery_policy(str(code or ErrorCode.INTERNAL_ERROR))
             payload["runtime_recovery"] = recovery
             tool_result["recovery_action"] = recovery["action"]
         if (not tool_result["success"] or result.execution_status != "returned"
@@ -498,7 +488,7 @@ class Phase2Nodes(Phase1Nodes):
             await _call_recorder(
                 self.tool_recorder.failed,
                 tool_call_id=context.tool_call_id,
-                error_code=str(result.error_code or ErrorCode.INTERNAL_ERROR),
+                error_code=str(code or ErrorCode.INTERNAL_ERROR),
                 duration_ms=duration_ms,
             )
         state["tool_results"] = [*state.get("tool_results", []), tool_result]
@@ -771,6 +761,21 @@ def _append_pending_turn_result(state: AgentState, result: dict[str, Any]) -> No
         turn.setdefault("results", []).append(result)
 
 
+def _tool_outcome(definition, code, execution_status, business_outcome):
+    """Normalize trusted executor metadata, never tool content or model arguments."""
+    metadata = {"execution_status": execution_status, "business_outcome": business_outcome,
+        "effect_class": getattr(definition, "effect_class", "unknown")}
+    may_have_mutated = (execution_status != "not_dispatched"
+        and business_outcome not in {"not_attempted", "rejected", "conflict"})
+    if (str(code or "") == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN)
+            or (metadata["effect_class"] == "mutates" and may_have_mutated
+                and (business_outcome == "unknown" or execution_status == "unconfirmed"))):
+        metadata.update(source_error_code=code, source_execution_status=execution_status,
+            source_business_outcome=business_outcome, execution_status="unconfirmed", business_outcome="unknown")
+        code = str(ErrorCode.OPERATION_OUTCOME_UNKNOWN)
+    return code, metadata
+
+
 def _append_tool_failure_result(
     state: AgentState,
     *,
@@ -780,12 +785,9 @@ def _append_tool_failure_result(
     retryable: bool = False,
     execution_status: str = "unconfirmed",
     business_outcome: str = "unknown",
-) -> None:
+) -> dict[str, Any]:
+    code, metadata = _tool_outcome(pending.get("definition"), code, execution_status, business_outcome)
     recovery = recovery_policy(str(code))
-    metadata = {"execution_status": execution_status, "business_outcome": business_outcome,
-        "effect_class": getattr(pending.get("definition"), "effect_class", "unknown")}
-    if str(code) == str(ErrorCode.OPERATION_OUTCOME_UNKNOWN):
-        metadata.update(execution_status="unconfirmed", business_outcome="unknown")
     result = {
         **metadata,
         "tool_call_id": getattr(pending.get("context"), "tool_call_id", ""),
@@ -810,6 +812,7 @@ def _append_tool_failure_result(
     state["pending_tool_call"] = None
     state["status"] = "RUNNING"
     append_event(state, RunEventType.TOOL_FAILED, {
+        "tool_call_id": result["tool_call_id"],
         "model_call_id": result["model_call_id"],
         "tool_name": result["name"],
         "code": str(code),
@@ -820,3 +823,4 @@ def _append_tool_failure_result(
         fail_run(state, code=ErrorCode.OPERATION_OUTCOME_UNKNOWN,
             message="写入结果未确认，可能已生效；请先核验状态，不要自动重试。",
             stage="reconcile_tool", retryable=False)
+    return result
