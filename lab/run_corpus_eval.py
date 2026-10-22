@@ -11,6 +11,7 @@ import subprocess
 import time
 from bootstrap import ROOT, setup
 from run_eval import model_config, EnvironmentCredentials, TracedGateway
+from source_identity import source_identity
 
 
 def score(rows):
@@ -57,17 +58,15 @@ async def run(args):
     setup()
     from apps.agent_runtime.providers.model.openai_compatible import OpenAICompatibleModelGateway
     from apps.agent_runtime.response_verification import ModelResponseVerifier
-    verifier_path = ROOT / "backend/apps/agent_runtime/response_verification.py"
     identity = {"corpus_file_sha256": file_info["sha256"], "selected_ids_sha256": hashlib.sha256(json.dumps([r["id"] for r in selected]).encode()).hexdigest(),
         "dataset": args.dataset, "split": args.split, "model": cfg["MODEL"],
         "endpoint_sha256": hashlib.sha256(cfg["BASE_URL"].encode()).hexdigest(),
-        "verifier_sha256": hashlib.sha256(verifier_path.read_bytes()).hexdigest(),
-        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        **source_identity(ROOT)}
     rows = []
     if args.resume:
         previous = json.loads((args.output / "manifest.json").read_text(encoding="utf-8"))
         if previous["identity"] != identity:
-            raise ValueError("Resume refused: corpus/selection/model/verifier/runner changed")
+            raise ValueError("Resume refused: corpus/selection/model/source/Python/dependencies changed")
         path = args.output / "trials.jsonl"
         rows = [json.loads(s) for s in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
         if len({r["id"] for r in rows}) != len(rows) or not {r["id"] for r in rows} <= {r["id"] for r in selected}:
