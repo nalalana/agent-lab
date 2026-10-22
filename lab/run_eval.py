@@ -79,7 +79,8 @@ async def run_case(case, config, timeout, gateway=None, environment=None):
     from apps.agent_runtime.contracts import RunRequest
     from apps.agent_runtime.orchestration.graph import Phase2AgentRuntimeFacade
     from apps.agent_runtime.providers.model.openai_compatible import OpenAICompatibleModelGateway
-    from apps.agent_runtime.response_verification import ModelRequestClassifier, ModelResponseVerifier
+    from apps.agent_runtime.response_verification import ModelRequestClassifier
+    from source_blocks import SourceBlockResponseVerifier as ModelResponseVerifier
     from apps.agent_runtime.tools.registry import ToolRouter
 
     environment = environment if environment is not None else BusinessEnvironment(case)

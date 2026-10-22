@@ -57,7 +57,7 @@ async def run(args):
     cfg = model_config()
     setup()
     from apps.agent_runtime.providers.model.openai_compatible import OpenAICompatibleModelGateway
-    from apps.agent_runtime.response_verification import ModelResponseVerifier
+    from source_blocks import SourceBlockResponseVerifier as ModelResponseVerifier
     identity = {"corpus_file_sha256": file_info["sha256"], "selected_ids_sha256": hashlib.sha256(json.dumps([r["id"] for r in selected]).encode()).hexdigest(),
         "dataset": args.dataset, "split": args.split, "model": cfg["MODEL"],
         "endpoint_sha256": hashlib.sha256(cfg["BASE_URL"].encode()).hexdigest(),

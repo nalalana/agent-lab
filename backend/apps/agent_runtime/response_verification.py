@@ -286,6 +286,11 @@ def validate_verdict(raw: str, data: dict, usage=None) -> VerificationResult:
 class ModelResponseVerifier:
     build_input = staticmethod(verification_input)
 
+    @staticmethod
+    def render_input(data, images):
+        content = _json(data)
+        return [{"type": "text", "text": content}, *images] if images else content
+
     def __init__(self, model_gateway, *, prompt_suffix="", strategy="evidence_scope"):
         if strategy not in {"baseline", "contract_repair", "evidence_scope", "combined"}:
             raise ValueError("Unknown verification strategy")
@@ -298,7 +303,7 @@ class ModelResponseVerifier:
         if self.strategy not in {"evidence_scope", "combined"}:
             data = {key: value for key, value in data.items() if key != "table_evidence_scope"}
         config = state["config"]
-        content = [{"type": "text", "text": _json(data)}, *images] if images else _json(data)
+        content = self.render_input(data, images)
         policy = VERIFICATION_PROMPT + self.prompt_suffix + ("\n" + TABLE_SCOPE_GUIDANCE if data.get("table_evidence_scope") else "")
         request = ModelRequest(
             run_id=state["run_id"], provider=config["model_provider"], model=config["model_name"],
