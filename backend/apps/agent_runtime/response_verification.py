@@ -284,10 +284,10 @@ class ModelResponseVerifier:
         data, images = self.build_input(state, draft)
         config = state["config"]
         content = [{"type": "text", "text": _json(data)}, *images] if images else _json(data)
+        policy = VERIFICATION_PROMPT + self.prompt_suffix + ("\n" + TABLE_SCOPE_GUIDANCE if data.get("table_evidence_scope") else "")
         request = ModelRequest(
             run_id=state["run_id"], provider=config["model_provider"], model=config["model_name"],
-            messages=[{"role": "system", "content": VERIFICATION_PROMPT + self.prompt_suffix
-                + ("\n" + TABLE_SCOPE_GUIDANCE if data.get("table_evidence_scope") else "")}, {"role": "user", "content": content}],
+            messages=[{"role": "system", "content": policy}, {"role": "user", "content": content}],
             tools=[], temperature=0, max_output_tokens=4096, response_format={"type": "json_schema", "json_schema": {"name": "response_verification", "strict": True, "schema": VERIFICATION_SCHEMA}},
             timeout_seconds=max(1, int(state.get("max_execution_seconds") or 60)), credential_ref=config["credential_ref"],
             purpose="response_verification",
@@ -318,7 +318,7 @@ class ModelResponseVerifier:
                 if attempt:
                     raise VerifierContractError(str(exc)) from exc
                 request = replace(request, messages=[
-                    {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + VERIFICATION_PROMPT + self.prompt_suffix},
+                    {"role": "system", "content": VERIFICATION_REPAIR_PROMPT + policy},
                     {"role": "user", "content": content},
                     {"role": "user", "content": _json({"previous_output": raw,
                         "contract_error": {"code": VerifierContractError.code, "detail": str(exc)}})},
