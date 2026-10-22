@@ -106,8 +106,11 @@ class StorageRetryTests(unittest.TestCase):
             with self.assertRaises(UnconfirmedWriteError):
                 execute(ToolRequest(name, {"tid": "t", "cells": [{"r": 0, "c": 0, "value": 1}]}, 5), SimpleNamespace(expected_table_version=0))
         before = service.upsert_table_cells.call_count
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ToolExecutionError) as caught:
             execute(ToolRequest("company.table.write", {"tid": "t", "cells": []}, 5), None)
+        self.assertEqual(caught.exception.code, "TOOL_INVALID_ARGUMENTS")
+        self.assertEqual((caught.exception.execution_status, caught.exception.business_outcome),
+                         ("not_dispatched", "not_attempted"))
         self.assertEqual(service.upsert_table_cells.call_count, before)
         with self.assertRaises(ValueError):
             execute(ToolRequest("company.table.read", {"tid": "t"}, 5), None)
