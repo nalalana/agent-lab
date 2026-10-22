@@ -1,6 +1,7 @@
 """Real-model synthetic conflict recovery, SQLite fixture; no PostgreSQL calls."""
 import argparse
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -56,7 +57,8 @@ class ConflictEnvironment(BusinessEnvironment):
         if type(expected) is not int:
             self.calls.append({"name": name, "arguments": args})
             self.journal.append({"name": name, "code": "TABLE_READ_REQUIRED"})
-            return self.failure("TABLE_READ_REQUIRED", "请先读取目标表格再提交修改")
+            return replace(self.failure("TABLE_READ_REQUIRED", "请先读取目标表格再提交修改"),
+                execution_status="not_dispatched", business_outcome="not_attempted")
         if self.case["mode"] == "always" or (self.case["mode"] == "once" and not self.conflicts):
             self.external_value = 20 + self.conflicts
             with self.db:
@@ -67,7 +69,8 @@ class ConflictEnvironment(BusinessEnvironment):
         if expected != version:
             self.calls.append({"name": name, "arguments": args})
             self.journal.append({"name": name, "code": "TABLE_WRITE_CONFLICT", "expected": expected, "current": version})
-            return self.failure("TABLE_WRITE_CONFLICT", "表格已被其他用户修改，本次操作未执行；请重新读取并核对用户意图")
+            return replace(self.failure("TABLE_WRITE_CONFLICT", "表格已被其他用户修改，本次操作未执行；请重新读取并核对用户意图"),
+                execution_status="returned", business_outcome="conflict")
         result = await super().execute(definition, request, context)
         if result.success:
             with self.db:
