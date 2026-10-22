@@ -10,7 +10,7 @@ from apps.agent_runtime.contracts import ModelEvent, RunRequest
 from apps.agent_runtime.orchestration.graph import Phase2AgentRuntimeFacade
 from apps.agent_runtime.response_verification import (
     ModelResponseVerifier, VerifierContractError, VerifierModelError,
-    VERIFICATION_PROMPT, VERIFICATION_REPAIR_PROMPT,
+    VERIFICATION_PROMPT, VERIFICATION_REPAIR_PROMPT, TABLE_SCOPE_GUIDANCE,
 )
 from apps.agent_runtime.tests.test_response_verification import claim, config, state, verdict
 
@@ -64,7 +64,7 @@ class VerifierRepairTests(unittest.TestCase):
                 self.assertEqual(result.usage["total_tokens"], 6)
                 self.assertEqual(len(result.metrics), 2)
                 first, repaired = gateway.requests
-                self.assertEqual(first.messages[0]["content"], VERIFICATION_PROMPT + "\nExtra operation attribution policy.")
+                self.assertEqual(first.messages[0]["content"], VERIFICATION_PROMPT + "\nExtra operation attribution policy.\n" + TABLE_SCOPE_GUIDANCE)
                 self.assertTrue(repaired.messages[0]["content"].startswith(VERIFICATION_REPAIR_PROMPT))
                 self.assertIn(first.messages[0]["content"], repaired.messages[0]["content"])
                 self.assertEqual(first.messages[1], repaired.messages[1])
