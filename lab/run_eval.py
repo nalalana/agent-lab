@@ -73,7 +73,7 @@ class TracedGateway:
             yield event
 
 
-async def run_case(case, config, timeout, gateway=None):
+async def run_case(case, config, timeout, gateway=None, environment=None):
     from business import BusinessEnvironment, grade
     from apps.agent_runtime.config.prompt_builder import AGENT_TEST_SAFETY_PROMPT, PLATFORM_AGENT_PROTOCOL
     from apps.agent_runtime.contracts import RunRequest
@@ -82,7 +82,7 @@ async def run_case(case, config, timeout, gateway=None):
     from apps.agent_runtime.response_verification import ModelRequestClassifier, ModelResponseVerifier
     from apps.agent_runtime.tools.registry import ToolRouter
 
-    environment = BusinessEnvironment(case)
+    environment = environment if environment is not None else BusinessEnvironment(case)
     traced = TracedGateway(gateway if gateway is not None else OpenAICompatibleModelGateway(
         credential_loader=EnvironmentCredentials(config), max_retries=0))
     facts = environment.permission_facts()
