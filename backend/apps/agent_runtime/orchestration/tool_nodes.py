@@ -41,6 +41,7 @@ from apps.agent_runtime.tools.executors import (
 )
 from apps.agent_runtime.tools.registry import ToolRouter, default_tool_registry
 from apps.agent_runtime.tools.recovery import recovery_policy
+from apps.agent_runtime.table_evidence import table_observations
 
 
 MAX_RESPONSE_CORRECTIONS = 2
@@ -588,23 +589,9 @@ async def _call_recorder(method, **kwargs) -> None:
 
 
 def _table_read_version(results: list[dict[str, Any]], tid: str) -> int | None:
-    """Use only this run's latest matching receipt, never model-supplied versions."""
-    for result in reversed(results):
-        name = result.get("name")
-        if name not in {"company.table.read", "company.table.write", "company.table.clear_cells"}:
-            continue
-        if str((result.get("arguments") or {}).get("tid") or "").strip() != tid:
-            continue
-        if name != "company.table.read" or not result.get("success"):
-            return None
-        try:
-            payload = json.loads(result["content"])
-            if payload.get("tid") != tid or payload.get("tool_name") != name:
-                return None
-            version = payload["data"]["table_version"]
-            return version if type(version) is int and version >= 0 else None
-        except (KeyError, TypeError, ValueError, AttributeError):
-            return None
+    for observation in table_observations(results).values():
+        if observation["tid"] == tid and observation["status"] == "observed":
+            return observation["write_version"]
     return None
 
 
