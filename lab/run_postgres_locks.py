@@ -38,7 +38,7 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def run(output, config_path=None):
+def run(output, config_path=None, *, remote_factory=None, extra_checks=None, manifest_updates=None):
     output.mkdir(parents=True, exist_ok=False)
     summary = {"status": "unavailable", "checks_passed": 0, "model_calls": 0,
                "real_immudb": False, "postgresql_lock_behavior_tested": False}
@@ -74,18 +74,24 @@ def run(output, config_path=None):
             for model in (User, Gates, GatesTable, APIKey, TableAuditEvent):
                 editor.create_model(model)
         user = User.objects.create(uid="lock-user", username="Fixture", created_at="1", updated_at="1")
-        gate = Gates.objects.create(gid="lock-project", owner=user, gatename="Fixture", created_at="1", updated_at="1")
+        gate = Gates.objects.create(gid="test_" + uuid4().hex if remote_factory else "lock-project",
+            owner=user, gatename="Fixture", created_at="1", updated_at="1")
         manifest = {"revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
             "source_sha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(), "schema": schema,
             "substitutions": ["IAM allow fixture", "moderation allow fixture", "SQLite remote store"]}
+        manifest.update(manifest_updates or {})
+        summary["real_immudb"] = manifest.get("real_immudb", False)
         (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         trials = []
         for first in ("write", "clear"):
-            table = GatesTable.objects.create(tid="lock-" + first, gate=gate, name=first,
+            table = GatesTable.objects.create(tid="t" + uuid4().hex if remote_factory else "lock-" + first,
+                gate=gate, name=first,
                 num_columns=2, created_at="1", updated_at="1")
             entered, release = threading.Event(), threading.Event()
-            class Remote(RemoteFixture):
+            target = (remote_factory(gate, table) if remote_factory else
+                      RemoteFixture(output / (first + "-remote.sqlite")))
+            class Remote:
                 armed = False
                 def pause(self):
                     if self.armed:
@@ -94,11 +100,16 @@ def run(output, config_path=None):
                         require(release.wait(5), "Holding writer was not released")
                 def upsert_data(self, *args):
                     self.pause()
-                    return super().upsert_data(*args)
+                    return target.upsert_data(*args)
                 def clear_cells(self, *args):
                     self.pause()
-                    return super().clear_cells(*args)
-            remote = Remote(output / (first + "-remote.sqlite"))
+                    return target.clear_cells(*args)
+                def values(self, tid):
+                    return target.values(tid)
+                @property
+                def calls(self):
+                    return target.calls
+            remote = Remote()
             writer = load_writer(remote)
             ok, receipt = writer.upsert_table_cells(user, table, [{"r": 0, "c": 0, "value": 100}])
             require(ok, "Seed write failed")
@@ -140,6 +151,8 @@ def run(output, config_path=None):
             expected = "200" if first == "write" else ""
             require(remote.values(table.tid)[0]["value"] == expected, "Intervening value overwritten")
             trials.append({"first": first, "postgres_lock_wait_observed": True, "stale_operation_rejected": True})
+        if extra_checks:
+            trials.extend(extra_checks(user, gate))
         (output / "trials.json").write_text(json.dumps(trials, indent=2), encoding="utf-8")
         summary.update(status="passed", checks_passed=len(trials), postgresql_lock_behavior_tested=True)
         return 0
