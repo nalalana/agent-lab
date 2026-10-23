@@ -1745,7 +1745,13 @@ class OpenGateService:
                 confirmation = execute_operation(client, db_name=locked.gate.gid, table_name=locked.tid,
                     operation_id=operation_id, scope_hash=scope_hash, request_hash=request_hash, effect_plan=effect_plan)
                 _check_recoverable_receipt(confirmation, receipt)
-                return _finish_recoverable_write(locked, fence, confirmation, client_ip)
+                # Recheck RPC-time policy changes; this does not serialize ACL updates.
+                fresh = GatesTable.objects.select_related('gate').get(pk=locked.pk)
+                fresh_user = User.objects.get(pk=user.pk)
+                if (_recoverable_scope(fresh, fresh_user) != scope
+                        or not OpenGateService.can_write_table(fresh_user, fresh)):
+                    raise RecoverableWriteUnknown(operation_id)
+                return _finish_recoverable_write(fresh, fence, confirmation, client_ip)
         except Exception as exc:
             raise RecoverableWriteUnknown(operation_id) from exc
 
@@ -1792,7 +1798,14 @@ class OpenGateService:
                 confirmation = read_operation_receipt(ImmudbService().immudb_client,
                     db_name=locked.gate.gid, expected_receipt=receipt)
                 _check_recoverable_receipt(confirmation, receipt)
-                return _finish_recoverable_write(locked, fence, confirmation, client_ip, user)
+                fresh = GatesTable.objects.select_related('gate').get(pk=locked.pk)
+                fresh_actor = User.objects.get(pk=fence.actor_id)
+                fresh_user = User.objects.get(pk=user.pk)
+                if _recoverable_scope(fresh, fresh_actor) != scope:
+                    raise RecoverableWriteUnknown(operation_id)
+                if not OpenGateService._has_iam_permission(fresh_user, Resource.TYPE_TABLE, fresh.tid, Grant.PERM_ADMIN):
+                    raise PermissionError('需要表格管理员权限核验写入结果。')
+                return _finish_recoverable_write(fresh, fence, confirmation, client_ip, fresh_user)
         except PermissionError:
             raise
         except Exception as exc:
