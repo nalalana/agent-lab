@@ -54,7 +54,7 @@ def load_service(client):
     from common.immudbIO.models import Worksheet, Cell, CellCttChoices
     tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ImmudbService")
-    methods = {"create_db", "delete_db", "create_table", "get_data", "upsert_data", "clear_cells"}
+    methods = {"create_db", "delete_db", "create_table", "get_data", "upsert_data", "clear_cells", "delete_row"}
     cls.body = [n for n in cls.body if getattr(n, "name", None) in methods]
     namespace = {"hashlib": hashlib, "Worksheet": Worksheet, "Cell": Cell,
                  "CellCttChoices": CellCttChoices, "toumingClient": toumingClient}
@@ -98,6 +98,10 @@ class RealRemote:
     def clear_cells(self, *args):
         self.calls += 1
         return self.service.clear_cells(*args)
+
+    def delete_row(self, *args):
+        self.calls += 1
+        return self.service.delete_row(*args)
 
     def get_data(self, *args):
         return self.service.get_data(*args)
