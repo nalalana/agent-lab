@@ -60,6 +60,64 @@ class TableWriteDurabilityError(RuntimeError):
     code = 'TABLE_WRITE_DURABILITY_REQUIRED'
 
 
+class RecoverableWriteUnknown(UnconfirmedWriteError):
+    """A server-issued operation can be queried, never safely resubmitted."""
+
+    def __init__(self, operation_id):
+        self.operation_id = operation_id
+        self.details = {'operation_id': operation_id}
+        super().__init__()
+
+
+def _recoverable_scope(table, actor):
+    try:
+        project = Resource.objects.get(type=Resource.TYPE_PROJECT, external_id=table.gate.gid)
+        resource = Resource.objects.get(type=Resource.TYPE_TABLE, external_id=table.tid)
+    except Resource.DoesNotExist as exc:
+        raise PermissionError('缺少项目或表格的租户绑定。') from exc
+    if (actor is None or resource.parent_id != project.pk or project.tenant_id is None
+            or resource.tenant_id != project.tenant_id):
+        raise PermissionError('恢复写入需要完整且一致的项目、表格和租户绑定。')
+    return {
+        'gate_pk': table.gate_id, 'gid': table.gate.gid,
+        'table_pk': table.pk, 'tid': table.tid, 'num_columns': table.num_columns,
+        'project_resource_pk': project.pk, 'table_resource_pk': resource.pk,
+        'tenant_pk': project.tenant_id, 'actor_pk': actor.pk, 'actor_uid': actor.uid,
+    }
+
+
+def _check_recoverable_receipt(confirmation, expected_receipt):
+    if (not isinstance(confirmation, dict) or confirmation.get('receipt') != expected_receipt
+            or type(confirmation.get('tx_id')) is not int or confirmation['tx_id'] <= 0):
+        raise ValueError('缺少与操作完全匹配的已提交事务凭证。')
+
+
+def _finish_recoverable_write(table, fence, confirmation, client_ip, reconciler=None):
+    """Caller holds the table lock; business versions and fence commit together."""
+    details = dict(fence.details)
+    events = []
+    for audit in details['audit_plan']:
+        event = _start_table_audit(table, fence.actor, audit['action'], client_ip,
+            row_index=audit.get('row_index'), column_index=audit.get('column_index'),
+            details={'operation_id': details['operation_id'], 'receipt_tx': confirmation['tx_id'],
+                     'request_committed': True, 'reconciled_by': reconciler.pk if reconciler else None})
+        _finish_table_audit(event, True)
+        events.append(event)
+    result = {
+        'operation_id': details['operation_id'], 'status': 'committed',
+        'table_version': max(event.pk for event in events),
+        'cell_versions': {f'{event.row_index}:{event.column_index}': event.pk for event in events
+                          if event.column_index is not None},
+    }
+    details.update(result=result, receipt_tx=confirmation['tx_id'])
+    fence.details = details
+    fence.save(update_fields=['details'])
+    _finish_table_audit(fence, True)
+    table.updated_at = str(time.time())[:20]
+    table.save(update_fields=['updated_at'])
+    return {**result, 'reconciled': reconciler is not None}
+
+
 def _require_table_autocommit():
     # A nested atomic block cannot durably record intent before the remote call.
     if transaction.get_connection().in_atomic_block or not transaction.get_autocommit():
@@ -1533,3 +1591,209 @@ class OpenGateService:
         revoke_permissions(principal=target_principal, resource=resource)
         logger.info(f"remove_table_member success: user={user.username} tid={tid} uid={uid} client_ip={client_ip}")
         return True, '删除成功'
+
+    @staticmethod
+    def submit_recoverable_write(
+        user: User, table: GatesTable, operation: str, *, expected_table_version: int,
+        values=None, cells=None, row_index=None, expected_max_row_index=None, client_ip=None,
+    ):
+        """Explicit opt-in: one remote business transaction plus its unique receipt."""
+        import hashlib
+        import re
+        from uuid import uuid4
+        from common.immudbIO.recoverable import canonical_hash, build_receipt, execute_operation
+
+        if not OpenGateService.can_write_table(user, table):
+            raise PermissionError('没有写入权限')
+        if type(expected_table_version) is not int or expected_table_version < 0:
+            raise TableCellValidationError({'expected_table_version': ['需要显式非负整数']})
+        allowed = {'raw_upsert', 'cells_upsert', 'clear', 'delete_row', 'append_row'}
+        if not isinstance(operation, str) or operation not in allowed:
+            raise TableCellValidationError({'operation': ['不支持的可恢复操作']})
+        if not all(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name or '')
+                   for name in (table.gate.gid, table.tid)):
+            raise TableCellValidationError({'table': ['需要安全的 SQL 标识符']})
+        if ((operation != 'raw_upsert' and values is not None)
+                or (operation in {'raw_upsert', 'delete_row'} and cells is not None)
+                or (operation != 'delete_row' and row_index is not None)
+                or (operation != 'append_row' and expected_max_row_index is not None)):
+            raise TableCellValidationError({'operation': ['参数与操作不匹配']})
+        if operation == 'delete_row':
+            if type(row_index) is not int or row_index < 0:
+                raise TableCellValidationError({'row_index': ['需要非负整数']})
+            normalized, payloads = [], []
+            audit_plan = [{'action': 'row.delete', 'row_index': row_index}]
+        else:
+            if operation == 'raw_upsert':
+                if not isinstance(values, dict):
+                    raise TableCellValidationError({'values': ['需要完整单元格对象']})
+                normalized, raw_payloads = [values], [values]
+            else:
+                if not isinstance(cells, list) or not cells or any(not isinstance(c, dict) for c in cells):
+                    raise TableCellValidationError({'cells': ['需要非空单元格对象列表']})
+                normalized = [dict(cell) for cell in cells]
+                if any(type(cell.get('r')) is not int or type(cell.get('c')) is not int for cell in normalized):
+                    raise TableCellValidationError({'coordinates': ['需要整数行列索引']})
+                raw_payloads = ([] if operation == 'clear' else
+                                [OpenGateService._prepare_cell_payload(cell) for cell in normalized])
+            payloads = []
+            for payload in raw_payloads:
+                serializer = WriteDataSerializer(data=payload)
+                if not serializer.is_valid():
+                    raise TableCellValidationError(serializer.errors)
+                payloads.append(dict(serializer.validated_data))
+            if operation == 'raw_upsert':
+                normalized = [{'r': payloads[0]['r'], 'c': payloads[0]['c']}]
+            coordinates = [(cell['r'], cell['c']) for cell in normalized]
+            if (len(set(coordinates)) != len(coordinates)
+                    or any(r < 0 or c < 0 or (table.num_columns and c >= table.num_columns) for r, c in coordinates)):
+                raise TableCellValidationError({'coordinates': ['重复坐标或行列索引超出范围']})
+            if any('expected_version' in cell and
+                   (type(cell['expected_version']) is not int or cell['expected_version'] < 0) for cell in normalized):
+                raise TableCellValidationError({'expected_version': ['需要非负整数']})
+            if operation == 'append_row' and (
+                type(expected_max_row_index) is not int or expected_max_row_index < -1
+                or table.num_columns <= 0
+                or set(coordinates) != {(expected_max_row_index + 1, c) for c in range(table.num_columns)}
+            ):
+                raise TableCellValidationError({'append': ['需要完整下一行及显式尾行版本']})
+            action = 'cell.clear' if operation == 'clear' else ('data.upsert' if operation == 'raw_upsert' else 'cell.upsert')
+            audit_plan = [{'action': action, 'row_index': r, 'column_index': c} for r, c in coordinates]
+        _require_table_autocommit()
+        moderation_ok, moderation_msg = _moderate_opengate_texts(
+            items=_table_write_text_items(values if operation == 'raw_upsert' else (cells or [])),
+            source=TextModerationAsset.SOURCE_EXTERNAL_API_TABLE_UPSERT,
+            owner_type='table', owner_id=table.tid, actor_id=getattr(user, 'uid', ''),
+        )
+        if not moderation_ok:
+            raise PermissionError(moderation_msg)
+        operation_id = uuid4().hex
+        # A preparation crash is deliberately not redispatchable. Only positive
+        # receipt evidence may release the durable intent below.
+        try:
+            with transaction.atomic(durable=True):
+                locked = GatesTable.objects.select_for_update().get(pk=table.pk)
+                if not OpenGateService.can_write_table(user, locked):
+                    raise PermissionError('没有写入权限')
+                if not all(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name or '')
+                           for name in (locked.gate.gid, locked.tid)):
+                    raise TableCellValidationError({'table': ['需要安全的 SQL 标识符']})
+                _assert_table_write_fence(locked)
+                if _table_version(locked) != expected_table_version:
+                    raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改',
+                        latest_table_version=_table_version(locked))
+                scope = _recoverable_scope(locked, user)
+                if normalized:
+                    versions = _cell_versions(locked, normalized)
+                    for cell in normalized:
+                        if 'expected_version' in cell and cell['expected_version'] != versions[(cell['r'], cell['c'])]:
+                            raise TableWriteConflict('CELL_WRITE_CONFLICT', '单元格已被其他用户修改',
+                                row_index=cell['r'], column_index=cell['c'], latest_version=versions[(cell['r'], cell['c'])])
+                remote = ImmudbService()
+                client = remote.immudb_client
+                if operation == 'append_row':
+                    ok, summary = remote.get_data(locked.gate.gid, locked.tid, 1, 0)
+                    if ok is not True or not isinstance(summary, dict):
+                        raise UnconfirmedWriteError()
+                    if summary.get('max_row_index') != expected_max_row_index:
+                        raise TableWriteConflict('ROW_APPEND_CONFLICT', '表格尾部已被其他用户更新',
+                            latest_max_row_index=summary.get('max_row_index'))
+                client.useDatabase(locked.gate.gid.encode('utf-8'))
+                for payload in payloads:
+                    cell_id = hashlib.sha256(f"{locked.tid}:{payload['r']}:{payload['c']}".encode()).hexdigest()
+                    if operation != 'append_row':
+                        existing = client.sqlQuery(f'SELECT cell_id FROM {locked.tid} WHERE r=@r AND c=@c',
+                            {'r': payload['r'], 'c': payload['c']})
+                        if len(existing) > 1:
+                            raise TableCellValidationError({'coordinates': ['单元格坐标存在重复记录']})
+                        if existing:
+                            cell_id = existing[0][0]
+                    payload.update(cell_id=cell_id, worksheet_id=locked.tid)
+                effect_plan = {'operation': operation, 'num_columns': locked.num_columns}
+                if payloads:
+                    effect_plan['cells'] = payloads
+                elif operation == 'clear':
+                    effect_plan['coordinates'] = [{'row_index': c['r'], 'column_index': c['c']} for c in normalized]
+                else:
+                    effect_plan['row_index'] = row_index
+                if operation == 'append_row':
+                    effect_plan['row_index'] = expected_max_row_index + 1
+                scope_hash = canonical_hash(scope)
+                request = {'expected_table_version': expected_table_version,
+                           'expected_max_row_index': expected_max_row_index,
+                           'effect_hash': canonical_hash(effect_plan), 'audit_plan': audit_plan}
+                request_hash = canonical_hash(request)
+                try:
+                    receipt = build_receipt(db_name=locked.gate.gid, table_name=locked.tid, operation_id=operation_id,
+                        scope_hash=scope_hash, request_hash=request_hash, effect_plan=effect_plan)
+                except ValueError as exc:
+                    raise TableCellValidationError({'effect_plan': ['完整写入计划未通过校验']}) from exc
+                fence = _start_table_audit(locked, user, TABLE_WRITE_FENCE_ACTION, client_ip,
+                    details={'recoverable_version': 1, 'operation': operation, 'operation_id': operation_id,
+                             'scope': scope, 'request': request, 'audit_plan': audit_plan, 'expected_receipt': receipt})
+        except (TableWriteConflict, TableCellValidationError, PermissionError, UnconfirmedWriteError):
+            raise
+        except Exception as exc:
+            raise RecoverableWriteUnknown(operation_id) from exc
+        try:
+            with transaction.atomic():
+                locked = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked, fence.pk)
+                if (_table_version(locked) != expected_table_version or _recoverable_scope(locked, user) != scope
+                        or not OpenGateService.can_write_table(user, locked)):
+                    raise RecoverableWriteUnknown(operation_id)
+                confirmation = execute_operation(client, db_name=locked.gate.gid, table_name=locked.tid,
+                    operation_id=operation_id, scope_hash=scope_hash, request_hash=request_hash, effect_plan=effect_plan)
+                _check_recoverable_receipt(confirmation, receipt)
+                return _finish_recoverable_write(locked, fence, confirmation, client_ip)
+        except Exception as exc:
+            raise RecoverableWriteUnknown(operation_id) from exc
+
+    @staticmethod
+    def reconcile_committed_write(user: User, table: GatesTable, operation_id: str, *, client_ip=None):
+        """Authorize and record a matching positive commit; never resend business SQL."""
+        from common.immudbIO.recoverable import canonical_hash, read_operation_receipt
+
+        if not OpenGateService._has_iam_permission(user, Resource.TYPE_TABLE, table.tid, Grant.PERM_ADMIN):
+            raise PermissionError('需要表格管理员权限核验写入结果。')
+        if not isinstance(operation_id, str) or len(operation_id) != 32 or any(c not in '0123456789abcdef' for c in operation_id):
+            raise TableCellValidationError({'operation_id': ['需要服务器生成的操作标识']})
+        _require_table_autocommit()
+        try:
+            with transaction.atomic():
+                locked = GatesTable.objects.select_for_update().get(pk=table.pk)
+                if not OpenGateService._has_iam_permission(user, Resource.TYPE_TABLE, locked.tid, Grant.PERM_ADMIN):
+                    raise PermissionError('需要表格管理员权限核验写入结果。')
+                matches = list(TableAuditEvent.objects.filter(table=locked, action=TABLE_WRITE_FENCE_ACTION,
+                    details__operation_id=operation_id)[:2])
+                if len(matches) != 1:
+                    raise RecoverableWriteUnknown(operation_id)
+                fence = matches[0]
+                details = fence.details
+                receipt = details.get('expected_receipt', {})
+                request = details.get('request', {})
+                scope = _recoverable_scope(locked, fence.actor)
+                if (details.get('recoverable_version') != 1 or details.get('scope') != scope
+                        or receipt.get('scope_hash') != canonical_hash(scope)
+                        or receipt.get('request_hash') != canonical_hash(request)
+                        or receipt.get('effect_hash') != request.get('effect_hash')
+                        or request.get('audit_plan') != details.get('audit_plan')
+                        or receipt.get('operation') != details.get('operation')
+                        or receipt.get('operation_id') != operation_id
+                        or receipt.get('db_name') != locked.gate.gid or receipt.get('table_name') != locked.tid):
+                    raise RecoverableWriteUnknown(operation_id)
+                if fence.result == TableAuditEvent.RESULT_SUCCESS:
+                    return {**details['result'], 'reconciled': True}
+                if fence.result != TableAuditEvent.RESULT_PENDING:
+                    raise RecoverableWriteUnknown(operation_id)
+                _assert_table_write_fence(locked, fence.pk)
+                if _table_version(locked) != request.get('expected_table_version'):
+                    raise RecoverableWriteUnknown(operation_id)
+                confirmation = read_operation_receipt(ImmudbService().immudb_client,
+                    db_name=locked.gate.gid, expected_receipt=receipt)
+                _check_recoverable_receipt(confirmation, receipt)
+                return _finish_recoverable_write(locked, fence, confirmation, client_ip, user)
+        except PermissionError:
+            raise
+        except Exception as exc:
+            raise RecoverableWriteUnknown(operation_id) from exc
