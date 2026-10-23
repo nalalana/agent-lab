@@ -44,6 +44,27 @@ class TableWriteConflict(Exception):
         self.details = details
 
 
+TABLE_WRITE_FENCE_ACTION = 'write.fence'
+
+
+class TableWriteDurabilityError(RuntimeError):
+    code = 'TABLE_WRITE_DURABILITY_REQUIRED'
+
+
+def _require_table_autocommit():
+    # A nested atomic block cannot durably record intent before the remote call.
+    if transaction.get_connection().in_atomic_block or not transaction.get_autocommit():
+        raise TableWriteDurabilityError('受管表格操作需要独立事务边界，本次未派发。')
+
+
+def _assert_table_write_fence(table, expected_fence_id=None):
+    pending = list(TableAuditEvent.objects.filter(
+        table=table, action=TABLE_WRITE_FENCE_ACTION, result=TableAuditEvent.RESULT_PENDING,
+    ).order_by('id').values_list('id', flat=True)[:2])
+    if pending != ([expected_fence_id] if expected_fence_id is not None else []):
+        raise UnconfirmedWriteError()
+
+
 def _cell_versions(table, cells):
     coordinates = {(cell['r'], cell['c']) for cell in cells}
     versions = {coordinate: 0 for coordinate in coordinates}
@@ -66,7 +87,7 @@ def _cell_versions(table, cells):
 def _table_version(table):
     return TableAuditEvent.objects.filter(
         table=table, result=TableAuditEvent.RESULT_SUCCESS,
-    ).order_by('-id').values_list('id', flat=True).first() or 0
+    ).exclude(action=TABLE_WRITE_FENCE_ACTION).order_by('-id').values_list('id', flat=True).first() or 0
 
 
 def _ip_suffix(client_ip: Optional[str]) -> str:
@@ -878,27 +899,31 @@ class OpenGateService:
             return False, '没有查看权限'
         
         try:
+            _require_table_autocommit()
             immudb_service = ImmudbService()
-            for _ in range(3):
-                before = _table_version(table)
-                success, message = immudb_service.get_data(table.gate.gid, table.tid, limit, offset)
-                if not success:
-                    logger.error(f"[get_table_data] 查询失败 tid={table.tid} {_ip_suffix(client_ip)} err={message}")
-                    return False, message
-                cells = [
-                    {'r': int(row[2]), 'c': int(row[3])}
-                    for row in message.get('data', [])
-                    if isinstance(row, (list, tuple)) and len(row) > 3
-                ]
-                versions = _cell_versions(table, cells)
-                after = _table_version(table)
-                if before == after:
-                    message['cell_versions'] = {
-                        f'{row}:{column}': version
-                        for (row, column), version in versions.items()
-                    }
-                    message['table_version'] = after
-                    return True, message
+            with transaction.atomic():
+                table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(table)
+                for _ in range(3):
+                    before = _table_version(table)
+                    success, message = immudb_service.get_data(table.gate.gid, table.tid, limit, offset)
+                    if not success:
+                        logger.error(f"[get_table_data] 查询失败 tid={table.tid} {_ip_suffix(client_ip)} err={message}")
+                        return False, message
+                    cells = [
+                        {'r': int(row[2]), 'c': int(row[3])}
+                        for row in message.get('data', [])
+                        if isinstance(row, (list, tuple)) and len(row) > 3
+                    ]
+                    versions = _cell_versions(table, cells)
+                    after = _table_version(table)
+                    if before == after:
+                        message['cell_versions'] = {
+                            f'{row}:{column}': version
+                            for (row, column), version in versions.items()
+                        }
+                        message['table_version'] = after
+                        return True, message
             return False, '表格正在更新，请重试'
         except Exception as e:
             logger.error(f"[get_table_data] 查询失败 tid={table.tid} {_ip_suffix(client_ip)} error={str(e)}")
@@ -1121,6 +1146,7 @@ class OpenGateService:
             logger.error(f"[upsert_table_cells] no write permission tid={table.tid} user={user.username} ip={client_ip}")
             return False, '没有写入权限'
 
+        _require_table_autocommit()
         try:
             normalized_cells = [OpenGateService._ensure_cell_dict(cell) for cell in cells]
             coordinates = [(cell['r'], cell['c']) for cell in normalized_cells]
@@ -1149,8 +1175,9 @@ class OpenGateService:
             if not moderation_ok:
                 return False, moderation_msg
             immudb_service = ImmudbService()
-            with transaction.atomic():
+            with transaction.atomic(durable=True):
                 locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked_table)
                 if append:
                     ok, summary = immudb_service.get_data(table.gate.gid, table.tid, 1, 0)
                     if not ok:
@@ -1181,6 +1208,17 @@ class OpenGateService:
                                 latest_version=current,
                             )
 
+                fence = _start_table_audit(
+                    locked_table, user, TABLE_WRITE_FENCE_ACTION, client_ip, api_key,
+                    details={'operation': 'cell.upsert'},
+                )
+            # The fence has committed before any remote mutation. A crash or
+            # rollback below leaves it pending; only full success can finish it.
+            with transaction.atomic():
+                locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked_table, fence.pk)
+                if _table_version(locked_table) != current_table_version:
+                    raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改')
                 events = [
                     _start_table_audit(
                         locked_table, user, 'cell.upsert', client_ip, api_key,
@@ -1207,6 +1245,7 @@ class OpenGateService:
 
                 locked_table.updated_at = str(time.time())[:20]
                 locked_table.save(update_fields=['updated_at'])
+                _finish_table_audit(fence, True)
                 return True, {
                     'row_index': coordinates[0][0],
                     'table_version': max(event.id for event in events),
@@ -1261,14 +1300,28 @@ class OpenGateService:
         """Check the read revision under the same table lock used by upserts."""
         if not OpenGateService.can_write_table(user, table):
             return False, '没有写入权限'
+        _require_table_autocommit()
         baseline = _table_version(table) if expected_table_version is None else expected_table_version
-        with transaction.atomic():
+        with transaction.atomic(durable=True):
             locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+            _assert_table_write_fence(locked_table)
             current = _table_version(locked_table)
             if current != baseline:
                 raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改',
                     latest_table_version=current)
-            return OpenGateService._clear_table_cells_locked(user, locked_table, cells, client_ip)
+            fence = _start_table_audit(locked_table, user, TABLE_WRITE_FENCE_ACTION, client_ip,
+                details={'operation': 'cell.clear'})
+        with transaction.atomic():
+            locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+            _assert_table_write_fence(locked_table, fence.pk)
+            current = _table_version(locked_table)
+            if current != baseline:
+                raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改',
+                    latest_table_version=current)
+            result = OpenGateService._clear_table_cells_locked(user, locked_table, cells, client_ip)
+            if result[0] is True:
+                _finish_table_audit(fence, True)
+            return result
 
     @staticmethod
     def _clear_table_cells_locked(

@@ -69,13 +69,18 @@ def load_writer(remote):
     from common.immudbIO.models import CellCtfaChoices, CellCttChoices
     from common.immudbIO.errors import UnconfirmedWriteError
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-    helpers = {"TableWriteConflict", "_cell_versions", "_table_version", "_start_table_audit",
+    helpers = {"TableWriteConflict", "TableWriteDurabilityError", "_require_table_autocommit",
+               "_assert_table_write_fence", "_cell_versions", "_table_version", "_start_table_audit",
                "_finish_table_audit", "_ip_suffix", "_table_write_text_items"}
-    methods = {"upsert_table_cells", "clear_table_cells", "_clear_table_cells_locked",
+    methods = {"get_table_data", "upsert_table_cells", "clear_table_cells", "_clear_table_cells_locked",
                "_ensure_cell_dict", "_normalize_cell_value", "_prepare_cell_payload"}
     body = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
     for node in tree.body:
         if getattr(node, "name", None) in helpers:
+            body.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "TABLE_WRITE_FENCE_ACTION" for target in node.targets
+        ):
             body.append(node)
         elif isinstance(node, ast.ClassDef) and node.name == "OpenGateService":
             node.body = [m for m in node.body if getattr(m, "name", None) in methods]
@@ -88,6 +93,7 @@ def load_writer(remote):
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(SOURCE), "exec"), namespace)
     writer = namespace["OpenGateService"]
     writer.can_write_table = staticmethod(lambda user, table: True)  # IAM is outside this diagnostic.
+    writer.can_read_table = staticmethod(lambda user, table: True)
     return writer
 
 
