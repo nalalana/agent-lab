@@ -99,7 +99,8 @@ class StorageRetryTests(unittest.TestCase):
             "Resource": SimpleNamespace(TYPE_TABLE="table"), "_resource": lambda *_: object(),
             "runtime_action_allowed": lambda *_: True, "OpenGateService": service,
             "UnconfirmedWriteError": UnconfirmedWriteError, "ToolExecutionError": ToolExecutionError,
-            "TableWriteConflict": type("TableWriteConflict", (Exception,), {})}
+            "TableWriteConflict": type("TableWriteConflict", (Exception,), {}),
+            "TableCellValidationError": type("TableCellValidationError", (ValueError,), {})}
         exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
         execute = namespace["execute_project_table_tool"]
         for name in ("company.table.write", "company.table.clear_cells"):

@@ -27,7 +27,8 @@ from apps.moderation.models import ImageModerationAsset
 from apps.moderation.services import ImageModerationService, moderation_payload
 from common.utils.Login_utils import login_checker, api_key_checker, get_client_ip, check_token, make_api_bearer_token
 from apps.opengate.serializers import CreateGateSerializer, DeleteGateKeySerializer, DeleteGateSerializer, ListGateKeySerializer, ListGateSerializer, ListTableSerializer, ProjectPublicAccessSerializer, SearchGateSerializer, ToggleGateKeySerializer, TableDetailsSerializer, TableDataSerializer, TableAuditSerializer, CreateGateKeySerializer, SimpleUpsertTableDataSerializer, DeleteTableRowSerializer
-from apps.opengate.services import OpenGateService, TableWriteConflict
+from apps.opengate.services import OpenGateService, TableCellValidationError, TableWriteConflict, TableWriteDurabilityError
+from common.immudbIO.errors import UnconfirmedWriteError
 from common.utils.Tengcentcos_utils import put_object, get_moderated_image_presigned_url
 
 db_url = db_local_base_url
@@ -64,6 +65,17 @@ def _read_json_body(request):
         return json.loads(request.body.decode() or '{}'), None
     except (JSONDecodeError, UnicodeDecodeError):
         return None, JsonResponse({'result': 0, 'message': 'invalid json payload'}, status=400)
+
+
+def _table_write_error_response(exc):
+    rejected = isinstance(exc, TableWriteDurabilityError)
+    return JsonResponse({
+        'result': 0, 'code': exc.code, 'retryable': False,
+        'message': ('当前事务配置不支持安全写入，本次未执行；请联系管理员处理，不要自动重试。'
+                    if rejected else '写入结果未确认，可能已生效；请先核验状态，不要重复提交。'),
+        'execution_status': 'not_dispatched' if rejected else 'unconfirmed',
+        'business_outcome': 'not_attempted' if rejected else 'unknown',
+    }, status=409)
 
 
 def _api_key_principal(request):
@@ -704,6 +716,10 @@ def upsert_table_cells(request):
             expected_max_row_index=serializer.validated_data.get('expected_max_row_index'),
             expected_table_version=serializer.validated_data.get('expected_table_version'),
         )
+    except TableCellValidationError as exc:
+        ok, msg = False, exc.errors
+    except (TableWriteDurabilityError, UnconfirmedWriteError) as exc:
+        return _table_write_error_response(exc)
     except TableWriteConflict as exc:
         return JsonResponse(
             {'result': 0, 'message': str(exc), 'code': exc.code, 'data': exc.details},
@@ -1210,6 +1226,10 @@ def app_upsert_table_data(request):
             expected_max_row_index=serializer.validated_data.get('expected_max_row_index'),
             expected_table_version=serializer.validated_data.get('expected_table_version'),
         )
+    except TableCellValidationError as exc:
+        ok, msg = False, exc.errors
+    except (TableWriteDurabilityError, UnconfirmedWriteError) as exc:
+        return _table_write_error_response(exc)
     except TableWriteConflict as exc:
         return JsonResponse(
             {'result': 0, 'message': str(exc), 'code': exc.code, 'data': exc.details},
