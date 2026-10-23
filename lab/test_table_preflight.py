@@ -23,14 +23,23 @@ def writer_fixture():
     table = SimpleNamespace(pk=1, tid="t", num_columns=2, gate=SimpleNamespace(gid="test_fixture"), save=Mock())
     manager, service = Mock(), Mock(return_value=remote)
     manager.select_for_update.return_value.get.return_value = table
-    audit = Mock(side_effect=lambda *args, **kwargs: SimpleNamespace(id=audit.call_count,
-        row_index=kwargs["row_index"], column_index=kwargs["column_index"]))
+    created = []
+    def start_audit(table, user, action, *args, **kwargs):
+        event = SimpleNamespace(pk=len(created) + 1, id=len(created) + 1,
+            row_index=kwargs.get("row_index"), column_index=kwargs.get("column_index"), action=action)
+        created.append(event)
+        return event
+    audit = Mock(side_effect=start_audit)
+    audit.created = created
     namespace = writer.upsert_table_cells.__globals__
-    namespace.update(transaction=SimpleNamespace(atomic=nullcontext),
+    # This fixture isolates payload checks; durable state is tested with a real
+    # ORM in test_durable_table_fence and with both servers in the safety oracle.
+    namespace.update(transaction=SimpleNamespace(atomic=lambda **_: nullcontext(),
+        get_connection=lambda: SimpleNamespace(in_atomic_block=False), get_autocommit=lambda: True),
         GatesTable=SimpleNamespace(objects=manager), ImmudbService=service,
         _table_version=Mock(return_value=0),
         _cell_versions=Mock(side_effect=lambda table, cells: {(c["r"], c["c"]): 0 for c in cells}),
-        _start_table_audit=audit, _finish_table_audit=Mock(), logger=Mock())
+        _start_table_audit=audit, _finish_table_audit=Mock(), _assert_table_write_fence=Mock(), logger=Mock())
     return writer, remote, table, namespace
 
 
@@ -57,7 +66,7 @@ class TablePreflightTests(unittest.TestCase):
     def test_valid_payloads_are_prepared_once_and_reused_by_each_write_path(self):
         for append in (False, True):
             with self.subTest(append=append):
-                writer, remote, table, _ = writer_fixture()
+                writer, remote, table, namespace = writer_fixture()
                 prepare = Mock(wraps=writer._prepare_cell_payload)
                 writer._prepare_cell_payload = prepare
                 cells = [{"r": 1, "c": 0, "value": 100}, {"r": 1, "c": 1, "value": True}]
@@ -65,7 +74,8 @@ class TablePreflightTests(unittest.TestCase):
                     expected_max_row_index=0 if append else None, expected_table_version=0)
                 self.assertTrue(ok)
                 self.assertEqual(prepare.call_count, 2)
-                self.assertEqual(receipt["table_version"], 2)
+                self.assertEqual(receipt["table_version"], max(event.id for event in
+                    namespace["_start_table_audit"].created if event.action == "cell.upsert"))
                 if append:
                     payloads = remote.insert_row.call_args.args[2]
                     self.assertEqual(remote.insert_row.call_count, 1)
