@@ -387,13 +387,17 @@ def recovery_checks(output, user, gate, factory, make_remote, config_path):
     def aborted(facts, checks):
         item, old, remote, writer, before, initial = lose("abort", "abort", two_cells=True)
         facts.update(submit=initial, injection=remote.immudb_client.last_injection,
-            confirmed_transactions=remote.immudb_client.confirmed_transactions, values=remote.values(item.tid))
+            confirmed_transactions=remote.immudb_client.confirmed_transactions, values=remote.values(item.tid),
+            sql_exec_attempts=remote.immudb_client.sql_exec_attempts,
+            sql_exec_error=remote.immudb_client.last_sql_exec_error)
         counters = remote.immudb_client.counters()
         facts["reconcile"] = resolve(writer, item, initial.get("operation_id"))
         facts["calls"] = delta(remote.immudb_client.counters(), counters)
         facts["after"] = snapshot(writer, item)
         checks.update(initial_unknown=initial["unknown"], actual_atomic_abort=facts["injection"] == "abort"
-                and len(facts["confirmed_transactions"]) == 0,
+                and len(facts["confirmed_transactions"]) == 0 and facts["sql_exec_attempts"] == 1
+                and isinstance(facts["sql_exec_error"], dict)
+                and facts["sql_exec_error"]["category"] == "server_duplicate_primary_key",
             all_business_cells_rolled_back=facts["values"] == [], no_positive_receipt=facts["reconcile"]["unknown"],
             pending_remains=facts["after"]["pending"] == 1, version_unchanged=facts["after"]["version"] == before["version"],
             no_business_redispatch=facts["calls"]["business_mutation_calls"] == 0)
@@ -438,7 +442,7 @@ def recovery_checks(output, user, gate, factory, make_remote, config_path):
 
 def run(output, config_path):
     paths = ("backend/apps/opengate/services.py", "backend/common/immudbIO/recoverable.py", "lab/recovery_fixture.py")
-    manifest = {"kind": "opt_in_positive_receipt_recovery_oracle", "oracle_version": 1,
+    manifest = {"kind": "opt_in_positive_receipt_recovery_oracle", "oracle_version": 2,
         "case_ids": CASE_IDS, "family_ids": list(FAMILIES), "oracle_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "identity": source_identity(ROOT), "recovery_source_sha256": {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
             for p in paths if (ROOT / p).exists()}, "lab_sqlite_unknown_guard_enabled": False,
@@ -459,7 +463,7 @@ def run(output, config_path):
             remote = RecoveryRemote(client, gate.gid)
             ensure_receipt_table(remote.immudb_client, db_name=gate.gid)
             # Provisioning/login are outside the measured API operation.
-            remote.immudb_client.total_rpc = 0
+            remote.immudb_client.total_rpc = remote.immudb_client.sql_exec_attempts = 0
             return remote
         try:
             return recovery_checks(folder, user, gate, factory, make_remote, config_path)
@@ -473,7 +477,7 @@ def run(output, config_path):
     rows = json.loads(trials_path.read_text()) if trials_path.exists() else []
     failures = [{"case": row["case"], "check": key} for row in rows for key, passed in row["checks"].items() if not passed]
     unsupported = sum(row.get("status") == "unsupported" for row in rows)
-    summary.update(kind=manifest["kind"], recovery_cases_expected=len(CASE_IDS), recovery_cases_completed=len(rows),
+    summary.update(kind=manifest["kind"], oracle_version=2, recovery_cases_expected=len(CASE_IDS), recovery_cases_completed=len(rows),
         recovery_cases_passed=sum(row["passed"] for row in rows), recovery_cases_unsupported=unsupported,
         recovery_failed_checks=failures, recovery_families_expected=len(FAMILIES),
         recovery_families_passed=sum(all(r["passed"] for r in rows if r["family"] == family)

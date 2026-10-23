@@ -7,11 +7,12 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+import grpc
 
 from bootstrap import setup
 setup()
 from common.immudbIO.errors import UnconfirmedWriteError
-from recovery_fixture import RecoveryClient, load_recovery_writer, logical_transaction
+from recovery_fixture import RecoveryClient, load_recovery_writer, logical_transaction, sql_failure_category
 from run_realdb_recovery import CASE_IDS, FAMILIES, attempt, run
 
 
@@ -80,6 +81,27 @@ class RecoveryOracleTests(unittest.TestCase):
         self.assertEqual(proxy.last_injection, "operation_id_mismatch")
         self.assertEqual(proxy.receipt_reads, 0)
 
+    def test_atomic_abort_requires_the_pinned_server_constraint_not_local_or_connection_failure(self):
+        class ServerFailure(grpc.RpcError):
+            def __init__(self, status, detail): self.status, self.detail = status, detail
+            def code(self): return self.status
+            def details(self): return self.detail
+        for error, expected in ((TypeError("local parameter error"), "local_error"),
+                (ServerFailure(grpc.StatusCode.UNAVAILABLE, "key already exists"), "other_rpc_error"),
+                (ServerFailure(grpc.StatusCode.UNKNOWN, "connection refused"), "other_rpc_error"),
+                (ServerFailure(grpc.StatusCode.UNKNOWN, "key already exists"), "server_duplicate_primary_key")):
+            self.assertEqual(sql_failure_category(error), expected)
+            client = Mock()
+            client.sqlExec.side_effect = error
+            proxy = RecoveryClient(client)
+            proxy.fault = "abort"
+            with self.assertRaises(type(error)):
+                proxy.sqlExec(*transaction())
+            self.assertEqual(proxy.sql_exec_attempts, 1)
+            self.assertEqual(proxy.confirmed_transactions, [])
+            self.assertEqual(proxy.last_sql_exec_error["category"], expected)
+            self.assertNotIn("details", proxy.last_sql_exec_error)
+
     def test_no_arbitrary_exception_or_boolean_is_a_verified_commit(self):
         for value, unknown in ((UnconfirmedWriteError(), True), (RuntimeError("committed; blocked"), False),
                               (False, False), ({"status": "unknown"}, False)):
@@ -114,6 +136,7 @@ class RecoveryOracleTests(unittest.TestCase):
                 output = Path(directory) / "output"
                 def integration_run(folder, _config, **kwargs):
                     self.assertEqual(kwargs["manifest_updates"]["case_ids"], CASE_IDS)
+                    self.assertEqual(kwargs["manifest_updates"]["oracle_version"], 2)
                     folder.mkdir()
                     (folder / "summary.json").write_text(json.dumps({"status": "passed", "checks_passed": 26,
                         "postgresql_lock_behavior_tested": True, "schema_removed": True}))
