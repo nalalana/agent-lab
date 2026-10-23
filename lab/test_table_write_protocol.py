@@ -32,7 +32,7 @@ def guarded_writer():
     return writer, remote, audits
 
 
-def handlers(service, durability_error):
+def handlers(service, durability_error, validation_error=()):
     path = ROOT / "backend/apps/opengate/views.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     functions = {"_table_write_error_response", "upsert_table_cells", "app_upsert_table_data"}
@@ -46,6 +46,7 @@ def handlers(service, durability_error):
     payload = {"tid": "t", "values": [{"r": 0, "c": 0, "value": 100}], "expected_table_version": 0}
     namespace = {"JsonResponse": JsonResponse, "logger": Mock(), "OpenGateService": service,
         "TableWriteConflict": type("Conflict", (Exception,), {}),
+        "TableCellValidationError": validation_error,
         "TableWriteDurabilityError": durability_error, "UnconfirmedWriteError": UnconfirmedWriteError,
         "_optional_user_from_request": lambda _: user, "_api_key_principal": lambda _: (user, None),
         "_read_json_body": lambda _: (payload, None), "get_client_ip": lambda _: "127.0.0.1",
@@ -121,6 +122,17 @@ class TableWriteProtocolTests(unittest.TestCase):
             self.assertIn("不要重复提交", payload["message"])
             self.assertNotIn("本次未执行", payload["message"])
         self.assertEqual(effects, ["committed", "committed"])
+
+    def test_both_actual_http_handlers_preserve_preflight_error_response(self):
+        writer, _, _ = guarded_writer()
+        namespace = writer.upsert_table_cells.__globals__
+        error = namespace["TableCellValidationError"]({"cts": ["blank"]})
+        service = SimpleNamespace(upsert_table_cells=Mock(side_effect=error))
+        views, request = handlers(service, namespace["TableWriteDurabilityError"], type(error))
+        for name, status in (("upsert_table_cells", 403), ("app_upsert_table_data", 400)):
+            response = views[name](request)
+            self.assertEqual(response.status_code, status)
+            self.assertEqual(json.loads(response.content), {"result": 0, "message": error.errors})
 
 
 if __name__ == "__main__":
