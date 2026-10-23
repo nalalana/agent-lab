@@ -1,9 +1,7 @@
 """New opt-in recovery extraction and SDK instrumentation; old runners are unchanged."""
 import ast
 import json
-from pathlib import Path
 import os
-from types import SimpleNamespace
 from uuid import uuid4
 
 from run_realdb_integration import load_service
@@ -18,6 +16,11 @@ def load_recovery_writer(remote, *, admin=True):
     from apps.iam.models import Grant, Resource
     namespace = writer.upsert_table_cells.__globals__
     namespace.update(Resource=Resource, Grant=Grant)
+    def construct():
+        if hasattr(remote, "immudb_client"):
+            remote.immudb_client.service_constructions += 1
+        return remote
+    namespace["ImmudbService"] = construct
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "OpenGateService")
     selected = [n for n in cls.body if getattr(n, "name", None) in METHODS]
@@ -76,14 +79,18 @@ class RecoveryClient:
     def __init__(self, client):
         self.client, self.fault = client, None
         self.business_mutation_calls = self.receipt_reads = self.total_rpc = 0
+        self.service_constructions = 0
         self.confirmed_transactions, self.last_operation_id = [], None
         self.entered = self.release = None
+        self.proof_entered = self.proof_release = None
+        self.last_injection = None
 
     def __getattr__(self, name):
         return getattr(self.client, name)
 
     def counters(self):
-        return {key: getattr(self, key) for key in ("business_mutation_calls", "receipt_reads", "total_rpc")}
+        return {key: getattr(self, key) for key in
+                ("business_mutation_calls", "receipt_reads", "total_rpc", "service_constructions")}
 
     def useDatabase(self, *args, **kwargs):
         self.total_rpc += 1
@@ -96,6 +103,12 @@ class RecoveryClient:
     def verifiableSQLGet(self, *args, **kwargs):
         self.total_rpc += 1
         self.receipt_reads += 1
+        if self.proof_entered is not None:
+            entered, release = self.proof_entered, self.proof_release
+            self.proof_entered = None
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("Receipt proof read was not released")
         return self.client.verifiableSQLGet(*args, **kwargs)
 
     def sqlExec(self, query, params=None, *args, **kwargs):
@@ -110,8 +123,35 @@ class RecoveryClient:
                 self.entered.set()
                 if not self.release.wait(5):
                     raise TimeoutError("Receipt transaction was not released")
+            if fault in {"partial", "request_digest_mismatch", "operation_id_mismatch", "scope_mismatch"}:
+                params = dict(params)
+                receipt = json.loads(params["receipt_payload"])
+                field = {"partial": "effect_hash", "request_digest_mismatch": "request_hash",
+                         "operation_id_mismatch": "operation_id", "scope_mismatch": "scope_hash"}[fault]
+                receipt[field] = uuid4().hex if field == "operation_id" else "0" * 64
+                params["receipt_payload"] = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                if fault == "partial":
+                    lines = query.splitlines()
+                    business = [i for i, line in enumerate(lines) if line.startswith("UPSERT INTO ")]
+                    if len(business) != 2:
+                        raise AssertionError("Partial fixture requires exactly two prepared cells")
+                    del lines[business[1]]
+                    query = "\n".join(lines)
+                    params = {key: value for key, value in params.items() if not key.startswith("cell_1_")}
+                self.last_injection = fault
+            if fault == "abort":
+                first = next(line for line in query.splitlines() if line.startswith("UPSERT INTO "))
+                # Valid SQL fails on the already-created primary key after prior DML
+                # and the receipt INSERT, testing actual transaction rollback.
+                duplicate = first.replace("UPSERT INTO ", "INSERT INTO ", 1)
+                query = query.removesuffix("COMMIT;") + duplicate + "\nCOMMIT;"
+                self.last_injection = fault
         self.total_rpc += 1
-        if atomic or query.lstrip().upper().startswith(("UPSERT INTO ", "UPDATE ", "DELETE FROM ")):
+        mutation = any(line.lstrip().upper().startswith(("UPSERT INTO ", "UPDATE ", "DELETE FROM "))
+            or (line.lstrip().upper().startswith("INSERT INTO ")
+                and not line.lstrip().upper().startswith(f"INSERT INTO {RECEIPT_TABLE.upper()} "))
+            for line in query.splitlines())
+        if atomic or mutation:
             self.business_mutation_calls += 1
         response = self.client.sqlExec(query, params, *args, **kwargs) if params is not None else self.client.sqlExec(query, *args, **kwargs)
         if atomic:
