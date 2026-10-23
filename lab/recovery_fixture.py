@@ -11,6 +11,16 @@ RECEIPT_TABLE = "agent_operation_receipts_v1"
 METHODS = {"submit_recoverable_write", "reconcile_committed_write"}
 
 
+def sql_failure_category(exc):
+    """Pinned real-server constraint signature, without persisting raw RPC details."""
+    import grpc
+    if isinstance(exc, grpc.RpcError):
+        if exc.code() == grpc.StatusCode.UNKNOWN and exc.details() == "key already exists":
+            return "server_duplicate_primary_key"
+        return "other_rpc_error"
+    return "local_error"
+
+
 def load_recovery_writer(remote, *, admin=True):
     writer = load_writer(remote)
     from apps.iam.models import Grant, Resource
@@ -81,6 +91,8 @@ class RecoveryClient:
         self.client, self.fault = client, None
         self.business_mutation_calls = self.receipt_reads = self.total_rpc = 0
         self.service_constructions = 0
+        self.sql_exec_attempts = 0
+        self.last_sql_exec_error = None
         self.confirmed_transactions, self.last_operation_id = [], None
         self.entered = self.release = None
         self.proof_entered = self.proof_release = None
@@ -91,7 +103,7 @@ class RecoveryClient:
 
     def counters(self):
         return {key: getattr(self, key) for key in
-                ("business_mutation_calls", "receipt_reads", "total_rpc", "service_constructions")}
+                ("business_mutation_calls", "receipt_reads", "total_rpc", "service_constructions", "sql_exec_attempts")}
 
     def useDatabase(self, *args, **kwargs):
         self.total_rpc += 1
@@ -154,7 +166,13 @@ class RecoveryClient:
             for line in query.splitlines())
         if atomic or mutation:
             self.business_mutation_calls += 1
-        response = self.client.sqlExec(query, params, *args, **kwargs) if params is not None else self.client.sqlExec(query, *args, **kwargs)
+        self.sql_exec_attempts += 1
+        self.last_sql_exec_error = None
+        try:
+            response = self.client.sqlExec(query, params, *args, **kwargs) if params is not None else self.client.sqlExec(query, *args, **kwargs)
+        except Exception as exc:
+            self.last_sql_exec_error = {"category": sql_failure_category(exc), "error_type": type(exc).__name__}
+            raise
         if atomic:
             if (getattr(response, "ongoingTx", None) is not False or len(getattr(response, "txs", [])) != 1
                     or type(response.txs[0].header.id) is not int or response.txs[0].header.id <= 0):
