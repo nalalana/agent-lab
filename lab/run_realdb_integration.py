@@ -99,6 +99,9 @@ class RealRemote:
         self.calls += 1
         return self.service.clear_cells(*args)
 
+    def get_data(self, *args):
+        return self.service.get_data(*args)
+
     def values(self, tid):
         from common.immudbIO.client import toumingClient
         self.rpc.useDatabase(self.gid.encode("utf-8"))
@@ -187,7 +190,7 @@ def additional_checks(output, user, gate, factory):
     return rows
 
 
-def run(output, config_path=None):
+def run(output, config_path=None, *, extra_checks=None, manifest_updates=None):
     if output.exists():
         raise FileExistsError("Diagnostic output must be new")
     client, service, databases = None, None, []
@@ -217,11 +220,12 @@ def run(output, config_path=None):
             "shared_sdk_scope": "one test database; competing RPCs serialized by the table row lock; reads after thread join",
             "immudb_service_sha256": hashlib.sha256(SERVICE_SOURCE.read_bytes()).hexdigest(),
             "immudb_client_sha256": hashlib.sha256(CLIENT_SOURCE.read_bytes()).hexdigest()}
+        manifest.update(manifest_updates or {})
         # Existing read retry logging is suppressed; database exceptions may expose
         # connection details. Only sanitized summaries and controlled trial data persist.
         with contextlib.redirect_stdout(io.StringIO()):
             code = run_locks(output, config_path, remote_factory=factory,
-                extra_checks=lambda user, gate: additional_checks(output, user, gate, factory),
+                extra_checks=lambda user, gate: (extra_checks or additional_checks)(output, user, gate, factory),
                 manifest_updates=manifest)
         summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     except Exception as exc:
