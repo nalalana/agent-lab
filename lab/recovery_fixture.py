@@ -14,8 +14,9 @@ METHODS = {"submit_recoverable_write", "reconcile_committed_write"}
 def load_recovery_writer(remote, *, admin=True):
     writer = load_writer(remote)
     from apps.iam.models import Grant, Resource
+    from apps.user.models import User
     namespace = writer.upsert_table_cells.__globals__
-    namespace.update(Resource=Resource, Grant=Grant)
+    namespace.update(Resource=Resource, Grant=Grant, User=User)
     def construct():
         if hasattr(remote, "immudb_client"):
             remote.immudb_client.service_constructions += 1
