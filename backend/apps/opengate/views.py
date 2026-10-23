@@ -27,7 +27,7 @@ from apps.moderation.models import ImageModerationAsset
 from apps.moderation.services import ImageModerationService, moderation_payload
 from common.utils.Login_utils import login_checker, api_key_checker, get_client_ip, check_token, make_api_bearer_token
 from apps.opengate.serializers import CreateGateSerializer, DeleteGateKeySerializer, DeleteGateSerializer, ListGateKeySerializer, ListGateSerializer, ListTableSerializer, ProjectPublicAccessSerializer, SearchGateSerializer, ToggleGateKeySerializer, TableDetailsSerializer, TableDataSerializer, TableAuditSerializer, CreateGateKeySerializer, SimpleUpsertTableDataSerializer, DeleteTableRowSerializer
-from apps.opengate.services import OpenGateService, TableWriteConflict
+from apps.opengate.services import OpenGateService, TableCellValidationError, TableWriteConflict
 from common.utils.Tengcentcos_utils import put_object, get_moderated_image_presigned_url
 
 db_url = db_local_base_url
@@ -704,6 +704,8 @@ def upsert_table_cells(request):
             expected_max_row_index=serializer.validated_data.get('expected_max_row_index'),
             expected_table_version=serializer.validated_data.get('expected_table_version'),
         )
+    except TableCellValidationError as exc:
+        ok, msg = False, exc.errors
     except TableWriteConflict as exc:
         return JsonResponse(
             {'result': 0, 'message': str(exc), 'code': exc.code, 'data': exc.details},
@@ -1210,6 +1212,8 @@ def app_upsert_table_data(request):
             expected_max_row_index=serializer.validated_data.get('expected_max_row_index'),
             expected_table_version=serializer.validated_data.get('expected_table_version'),
         )
+    except TableCellValidationError as exc:
+        ok, msg = False, exc.errors
     except TableWriteConflict as exc:
         return JsonResponse(
             {'result': 0, 'message': str(exc), 'code': exc.code, 'data': exc.details},
