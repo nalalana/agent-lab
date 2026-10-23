@@ -68,6 +68,11 @@ def _read_json_body(request):
 
 
 def _table_write_error_response(exc):
+    if isinstance(exc, TableCellValidationError):
+        return JsonResponse({
+            'result': 0, 'code': 'TOOL_INVALID_ARGUMENTS', 'retryable': False,
+            'message': exc.errors, 'execution_status': 'not_dispatched', 'business_outcome': 'not_attempted',
+        }, status=400)
     rejected = isinstance(exc, TableWriteDurabilityError)
     return JsonResponse({
         'result': 0, 'code': exc.code, 'retryable': False,
@@ -672,16 +677,26 @@ def upsert_table_data(request):
         logger.error(f"[upsert_table_data] 表格不存在 tid={tid} user={user.username} ip={get_client_ip(request)} path={request.path}")
         return JsonResponse({'result': 0, 'message': '表格不存在'})
 
-    ok, msg = OpenGateService.upsert_table_data_full(
-        user=user,
-        table=table,
-        values=s.validated_data['values'],
-        client_ip=get_client_ip(request)
-    )
+    if not OpenGateService.can_write_table(user, table):
+        return JsonResponse({'result': 0, 'message': '没有写入权限'}, status=403)
+    try:
+        ok, msg = OpenGateService.upsert_table_data_full(
+            user=user,
+            table=table,
+            values=s.validated_data['values'],
+            client_ip=get_client_ip(request),
+            expected_table_version=s.validated_data.get('expected_table_version'),
+        )
+    except (TableCellValidationError, TableWriteDurabilityError, UnconfirmedWriteError) as exc:
+        return _table_write_error_response(exc)
+    except TableWriteConflict as exc:
+        return JsonResponse(
+            {'result': 0, 'message': str(exc), 'code': exc.code, 'data': exc.details}, status=409,
+        )
     
     if not ok:
         logger.error(f"[upsert_table_data] {msg} tid={s.validated_data['tid']} user={user.username} ip={get_client_ip(request)} path={request.path}")
-        return JsonResponse({'result': 0, 'message': msg}, status=403)
+        return _table_write_error_response(UnconfirmedWriteError())
     
     logger.info(f"[upsert_table_data] 写入成功 tid={s.validated_data['tid']} user={user.username} ip={get_client_ip(request)} path={request.path}")
     return JsonResponse({'result': 1, 'message': msg})
@@ -750,14 +765,22 @@ def delete_table_row(request):
         return JsonResponse({'result': 0, 'message': '表格不存在'}, status=404)
     if not OpenGateService.can_write_table(user, table):
         return JsonResponse({'result': 0, 'message': '没有写入权限'}, status=403)
-    ok, result = OpenGateService.delete_table_row(
-        user=user,
-        table=table,
-        row_index=serializer.validated_data['r'],
-        client_ip=get_client_ip(request),
-    )
+    try:
+        ok, result = OpenGateService.delete_table_row(
+            user=user,
+            table=table,
+            row_index=serializer.validated_data['r'],
+            client_ip=get_client_ip(request),
+            expected_table_version=serializer.validated_data.get('expected_table_version'),
+        )
+    except (TableCellValidationError, TableWriteDurabilityError, UnconfirmedWriteError) as exc:
+        return _table_write_error_response(exc)
+    except TableWriteConflict as exc:
+        return JsonResponse(
+            {'result': 0, 'message': str(exc), 'code': exc.code, 'data': exc.details}, status=409,
+        )
     if not ok:
-        return JsonResponse({'result': 0, 'message': result}, status=404 if result == '行不存在或已删除' else 500)
+        return _table_write_error_response(UnconfirmedWriteError())
     return JsonResponse({'result': 1, 'message': '删除成功', 'data': {'deleted_cells': result}})
 
 
