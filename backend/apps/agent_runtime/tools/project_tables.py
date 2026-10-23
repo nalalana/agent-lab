@@ -13,7 +13,7 @@ from apps.company.models import Company, TransparentCompanyAgentDefinition
 from apps.iam.models import Grant, Resource, Tenant
 from apps.iam.services import runtime_action_allowed
 from apps.opengate.models import Gates, GatesTable
-from apps.opengate.services import OpenGateService, TableWriteConflict
+from apps.opengate.services import OpenGateService, TableWriteConflict, TableWriteDurabilityError
 from common.immudbIO.errors import UnconfirmedWriteError
 from apps.user.models import User
 
@@ -328,6 +328,10 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
                 cells=cells,
                 expected_table_version=version,
             )
+        except TableWriteDurabilityError as exc:
+            raise ToolExecutionError(code=exc.code,
+                message="当前事务配置不支持安全写入，本次未执行；请联系管理员处理。", retryable=False,
+                execution_status="not_dispatched", business_outcome="not_attempted") from exc
         except TableWriteConflict as exc:
             raise ToolExecutionError(code=exc.code,
                 message="表格已发生变化，本次写入未执行；请重新读取并核对修改。", retryable=False,
@@ -376,6 +380,10 @@ def execute_project_table_tool(request: ToolRequest, context: ToolContext) -> di
                 cells=coordinates,
                 expected_table_version=version,
             )
+        except TableWriteDurabilityError as exc:
+            raise ToolExecutionError(code=exc.code,
+                message="当前事务配置不支持安全清空，本次未执行；请联系管理员处理。", retryable=False,
+                execution_status="not_dispatched", business_outcome="not_attempted") from exc
         except TableWriteConflict as exc:
             raise ToolExecutionError(code=exc.code,
                 message="表格已发生变化，本次清空未执行；请重新读取并核对修改。", retryable=False,

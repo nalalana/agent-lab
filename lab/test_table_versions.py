@@ -25,7 +25,9 @@ def project_adapter(service, table, conflict_type, user=None):
         "Resource": SimpleNamespace(TYPE_TABLE="table"), "_resource": lambda *_: object(),
         "runtime_action_allowed": lambda *_: True, "OpenGateService": service,
         "UnconfirmedWriteError": UnconfirmedWriteError, "ToolExecutionError": ToolExecutionError,
-        "TableWriteConflict": conflict_type}
+        "TableWriteConflict": conflict_type,
+        "TableWriteDurabilityError": getattr(getattr(service, "upsert_table_cells", None),
+            "__globals__", {}).get("TableWriteDurabilityError", ())}
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
     return namespace["execute_project_table_tool"]
 
