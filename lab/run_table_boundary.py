@@ -67,9 +67,10 @@ def load_writer(remote):
     from django.db.models import Max
     from apps.opengate.models import GatesTable, TableAuditEvent
     from common.immudbIO.models import CellCtfaChoices, CellCttChoices
+    from common.immudbIO.serializers import WriteDataSerializer
     from common.immudbIO.errors import UnconfirmedWriteError
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-    helpers = {"TableWriteConflict", "_cell_versions", "_table_version", "_start_table_audit",
+    helpers = {"TableWriteConflict", "TableCellValidationError", "_cell_versions", "_table_version", "_start_table_audit",
                "_finish_table_audit", "_ip_suffix", "_table_write_text_items"}
     methods = {"upsert_table_cells", "clear_table_cells", "_clear_table_cells_locked",
                "_ensure_cell_dict", "_normalize_cell_value", "_prepare_cell_payload"}
@@ -82,7 +83,7 @@ def load_writer(remote):
             body.append(node)
     namespace = {"transaction": django_transaction, "Max": Max, "GatesTable": GatesTable,
         "TableAuditEvent": TableAuditEvent, "UnconfirmedWriteError": UnconfirmedWriteError, "time": time, "logger": logging.getLogger("isolated-table-boundary"),
-        "CellCtfaChoices": CellCtfaChoices, "CellCttChoices": CellCttChoices,
+        "CellCtfaChoices": CellCtfaChoices, "CellCttChoices": CellCttChoices, "WriteDataSerializer": WriteDataSerializer,
         "TextModerationAsset": SimpleNamespace(SOURCE_EXTERNAL_API_TABLE_UPSERT="fixture"),
         "_moderate_opengate_texts": lambda **_: (True, ""), "ImmudbService": lambda: remote}
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(SOURCE), "exec"), namespace)

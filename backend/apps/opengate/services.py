@@ -32,6 +32,7 @@ from apps.opengate.models import GatesTable
 from common.immudbIO.services import ImmudbService
 from common.immudbIO.errors import UnconfirmedWriteError
 from common.immudbIO.models import CellCtfaChoices, CellCttChoices
+from common.immudbIO.serializers import WriteDataSerializer
 
 
 logger = logging.getLogger('touming')
@@ -42,6 +43,14 @@ class TableWriteConflict(Exception):
         super().__init__(message)
         self.code = code
         self.details = details
+
+
+class TableCellValidationError(ValueError):
+    """All cell payloads were checked before any remote mutation was attempted."""
+
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__(f"单元格写入参数无效: {errors}")
 
 
 def _cell_versions(table, cells):
@@ -1135,6 +1144,12 @@ class OpenGateService:
             ):
                 return False, '新增行参数无效'
 
+            payloads = [OpenGateService._prepare_cell_payload(cell) for cell in normalized_cells]
+            for payload in payloads:
+                serializer = WriteDataSerializer(data=payload)
+                if not serializer.is_valid():
+                    raise TableCellValidationError(serializer.errors)
+
             # Legacy callers without a revision still get a snapshot before waiting
             # on the table lock, so overlapping writes cannot silently overwrite.
             baseline_versions = _cell_versions(table, normalized_cells) if not append else {}
@@ -1190,15 +1205,13 @@ class OpenGateService:
                     for cell in normalized_cells
                 ]
                 if append:
-                    payloads = [OpenGateService._prepare_cell_payload(cell) for cell in normalized_cells]
                     success, message = immudb_service.insert_row(table.gate.gid, table.tid, payloads)
                     for event in events:
                         _finish_table_audit(event, success)
                     if not success:
                         return False, message
                 else:
-                    for cell, event in zip(normalized_cells, events):
-                        payload = OpenGateService._prepare_cell_payload(cell)
+                    for cell, payload, event in zip(normalized_cells, payloads, events):
                         success, message = immudb_service.upsert_data(table.gate.gid, table.tid, payload)
                         _finish_table_audit(event, success)
                         if not success:
@@ -1215,6 +1228,8 @@ class OpenGateService:
                         for event in events
                     },
                 }
+        except TableCellValidationError:
+            raise
         except UnconfirmedWriteError:
             # Preserve uncertainty across the ORM/remote-store boundary.
             raise
