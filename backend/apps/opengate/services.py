@@ -1054,51 +1054,62 @@ class OpenGateService:
         user: User,
         table: GatesTable,
         values: dict,
-        client_ip: Optional[str] = None
+        client_ip: Optional[str] = None,
+        expected_table_version: int | None = None,
     ):
-        """
-        插入/更新表格数据，包含权限检查
-        返回: (True, '成功信息') 或 (False, '错误信息')
-        """
-            
+        """Preserve the raw cell payload under the managed write fence contract."""
         if not OpenGateService.can_write_table(user, table):
             logger.error(f"[upsert_table_data] 没有写入权限 tid={table.tid} user={user.username} ip={client_ip}")
             return False, '没有写入权限'
-
+        serializer = WriteDataSerializer(data=values)
+        if not serializer.is_valid():
+            raise TableCellValidationError(serializer.errors)
+        row_index, column_index = serializer.validated_data['r'], serializer.validated_data['c']
+        if row_index < 0 or column_index < 0 or (table.num_columns and column_index >= table.num_columns):
+            raise TableCellValidationError({'coordinates': ['单元格行列索引超出表格范围']})
+        if expected_table_version is not None and (type(expected_table_version) is not int or expected_table_version < 0):
+            raise TableCellValidationError({'expected_table_version': ['需要非负整数']})
+        # Keep cell_id/type/format/style fields; this is not a plain value edit.
+        payload = dict(values)
+        _require_table_autocommit()
+        baseline = _table_version(table) if expected_table_version is None else expected_table_version
+        moderation_ok, moderation_msg = _moderate_opengate_texts(
+            items=_table_write_text_items(payload),
+            source=TextModerationAsset.SOURCE_EXTERNAL_API_TABLE_UPSERT,
+            owner_type="table", owner_id=table.tid, actor_id=getattr(user, "uid", ""),
+        )
+        if not moderation_ok:
+            return False, moderation_msg
         try:
-            # 查询 immudb 数据
-            immudb_service = ImmudbService()
-            moderation_ok, moderation_msg = _moderate_opengate_texts(
-                items=_table_write_text_items(values),
-                source=TextModerationAsset.SOURCE_EXTERNAL_API_TABLE_UPSERT,
-                owner_type="table",
-                owner_id=table.tid,
-                actor_id=getattr(user, "uid", ""),
-            )
-            if not moderation_ok:
-                return False, moderation_msg
-            row_index = values.get('r')
-            column_index = values.get('c')
-            event = _start_table_audit(
-                table, user, 'data.upsert', client_ip,
-                row_index=row_index if type(row_index) is int else None,
-                column_index=column_index if type(column_index) is int else None,
-                details={'fields': list(values.keys())[:100]},
-            )
-            try:
-                success, message = immudb_service.upsert_data(table.gate.gid, table.tid, values)
-            except Exception:
-                _finish_table_audit(event, False)
-                raise
-            _finish_table_audit(event, success)
-            if not success:
-                logger.error(f"[upsert_table_data_full] 写入失败 tid={table.tid} {_ip_suffix(client_ip)} err={message}")
-                return False, message
-            
-            return True, message
-        except Exception as e:
-            logger.error(f"[upsert_table_data_full] 写入失败 tid={table.tid} {_ip_suffix(client_ip)} err={str(e)}")
-            return False, f'写入失败: {str(e)}'
+            with transaction.atomic(durable=True):
+                locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked_table)
+                current = _table_version(locked_table)
+                if current != baseline:
+                    raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改', latest_table_version=current)
+                fence = _start_table_audit(locked_table, user, TABLE_WRITE_FENCE_ACTION, client_ip,
+                    details={'operation': 'data.upsert'})
+            with transaction.atomic():
+                locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked_table, fence.pk)
+                current = _table_version(locked_table)
+                if current != baseline:
+                    raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改', latest_table_version=current)
+                event = _start_table_audit(locked_table, user, 'data.upsert', client_ip,
+                    row_index=row_index, column_index=column_index, details={'fields': list(payload.keys())[:100]})
+                success, message = ImmudbService().upsert_data(locked_table.gate.gid, locked_table.tid, payload)
+                if success is not True:
+                    raise UnconfirmedWriteError()
+                _finish_table_audit(event, True)
+                locked_table.updated_at = str(time.time())[:20]
+                locked_table.save(update_fields=['updated_at'])
+                _finish_table_audit(fence, True)
+                return True, message
+        except (TableWriteConflict, UnconfirmedWriteError):
+            raise
+        except Exception as exc:
+            logger.exception("[upsert_table_data_full] unconfirmed tid=%s", table.tid)
+            raise UnconfirmedWriteError() from exc
     
     @staticmethod
     def _normalize_cell_value(value: Any) -> tuple[str, str]:
@@ -1284,25 +1295,49 @@ class OpenGateService:
         table: GatesTable,
         row_index: int,
         client_ip: Optional[str] = None,
+        expected_table_version: int | None = None,
     ):
         if not OpenGateService.can_write_table(user, table):
             return False, '没有写入权限'
-        event = _start_table_audit(
-            table, user, 'row.delete', client_ip, row_index=row_index,
-        )
+        if type(row_index) is not int or row_index < 0:
+            raise TableCellValidationError({'row_index': ['需要非负整数']})
+        if expected_table_version is not None and (type(expected_table_version) is not int or expected_table_version < 0):
+            raise TableCellValidationError({'expected_table_version': ['需要非负整数']})
+        _require_table_autocommit()
+        baseline = _table_version(table) if expected_table_version is None else expected_table_version
         try:
-            success, result = ImmudbService().delete_row(table.gate.gid, table.tid, row_index)
+            with transaction.atomic(durable=True):
+                locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked_table)
+                current = _table_version(locked_table)
+                if current != baseline:
+                    raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改', latest_table_version=current)
+                fence = _start_table_audit(locked_table, user, TABLE_WRITE_FENCE_ACTION, client_ip,
+                    details={'operation': 'row.delete'})
+            with transaction.atomic():
+                locked_table = GatesTable.objects.select_for_update().get(pk=table.pk)
+                _assert_table_write_fence(locked_table, fence.pk)
+                current = _table_version(locked_table)
+                if current != baseline:
+                    raise TableWriteConflict('TABLE_WRITE_CONFLICT', '表格已被其他用户修改', latest_table_version=current)
+                event = _start_table_audit(locked_table, user, 'row.delete', client_ip, row_index=row_index)
+                success, result = ImmudbService().delete_row(locked_table.gate.gid, locked_table.tid, row_index)
+                if success is not True:
+                    # False includes absent rows and ambiguous remote failures;
+                    # do not infer a safe retry from its message.
+                    raise UnconfirmedWriteError()
+                event.details = {'deleted_cells': result}
+                event.save(update_fields=['details'])
+                _finish_table_audit(event, True)
+                locked_table.updated_at = str(time.time())[:20]
+                locked_table.save(update_fields=['updated_at'])
+                _finish_table_audit(fence, True)
+                return True, result
+        except (TableWriteConflict, UnconfirmedWriteError):
+            raise
         except Exception as exc:
-            _finish_table_audit(event, False)
-            logger.exception("[delete_table_row] 删除失败 tid=%s row=%s", table.tid, row_index)
-            return False, f'删除失败: {exc}'
-        event.details = {'deleted_cells': result} if success else {}
-        event.result = TableAuditEvent.RESULT_SUCCESS if success else TableAuditEvent.RESULT_FAILED
-        event.save(update_fields=['details', 'result'])
-        if success:
-            table.updated_at = str(time.time())[:20]
-            table.save(update_fields=['updated_at'])
-        return success, result
+            logger.exception("[delete_table_row] unconfirmed tid=%s row=%s", table.tid, row_index)
+            raise UnconfirmedWriteError() from exc
 
     @staticmethod
     def clear_table_cells(
