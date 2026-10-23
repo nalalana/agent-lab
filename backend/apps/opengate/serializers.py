@@ -76,6 +76,7 @@ class UpsertTableDataSerializer(serializers.Serializer):
     """Upsert table data payload."""
     tid = serializers.CharField()
     values = serializers.DictField(allow_empty=False)
+    expected_table_version = serializers.IntegerField(required=False, min_value=0)
 
 
 class SimpleUpsertTableDataSerializer(serializers.Serializer):
@@ -95,6 +96,7 @@ class SimpleUpsertTableDataSerializer(serializers.Serializer):
 class DeleteTableRowSerializer(serializers.Serializer):
     tid = serializers.CharField()
     r = serializers.IntegerField(min_value=0)
+    expected_table_version = serializers.IntegerField(required=False, min_value=0)
 
 
 class ListTableMemberSerializer(serializers.Serializer):
