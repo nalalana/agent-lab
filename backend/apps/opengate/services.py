@@ -81,7 +81,7 @@ def _cell_versions(table, cells):
         return versions
     events = TableAuditEvent.objects.filter(
         table=table,
-        action='cell.upsert',
+        action__in=('cell.upsert', 'data.upsert', 'cell.clear'),
         result=TableAuditEvent.RESULT_SUCCESS,
         row_index__in={row for row, _ in coordinates},
         column_index__in={column for _, column in coordinates},
@@ -90,6 +90,16 @@ def _cell_versions(table, cells):
         coordinate = (event['row_index'], event['column_index'])
         if coordinate in versions:
             versions[coordinate] = event['version']
+    # Row deletion invalidates even coordinates absent from the latest read.
+    deleted_rows = {
+        event['row_index']: event['version']
+        for event in TableAuditEvent.objects.filter(
+            table=table, action='row.delete', result=TableAuditEvent.RESULT_SUCCESS,
+            row_index__in={row for row, _ in coordinates},
+        ).order_by().values('row_index').annotate(version=Max('id'))
+    }
+    for coordinate in versions:
+        versions[coordinate] = max(versions[coordinate], deleted_rows.get(coordinate[0], 0))
     return versions
 
 
