@@ -29,3 +29,5 @@
 权威对账/解除、完整平台联调和模型端到端复测为后续阶段，本轮不以局部安全场景代替这些验收。
 
 首次新判定器真实运行前补充两项独立并发验收：`raw_then_delete_lock_conflict`、`delete_then_raw_lock_conflict`。原有两项PG锁只覆盖cells/clear，不能证明旧入口实际等待同一行锁；补充项必须通过pg_stat_activity观察Lock等待，释放胜者后等待方以typed TABLE_WRITE_CONFLICT拒绝且零新增远端变更。与13主场景分列，不改变其case IDs或分数；同一补充判定器用于旧版与候选。
+
+整合后独立审阅又发现 `_cell_versions` 只汇总 cell.upsert，HTTP 可只带单元格 expected_version 而省略表版本，raw/clear/delete 后该版本未推进。此为看到13场景与并发结果之后的补充发现，不冒充原始预注册。另冻结3个真实补充场景 `raw_cell_version`、`clear_cell_version`、`delete_cell_version`：先成功变更，再仅带旧cell版本写入须typed conflict、零新增服务变更调用且值保持；当前cell版本仍可写。原13及并发判定文件不改；共享版本汇总修正在 `exp/cell-version-mutations` 独立对照后整合。
