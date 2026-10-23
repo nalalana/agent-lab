@@ -1,7 +1,7 @@
 """Actual extracted services with isolated SQLite ORM and explicit SDK/IAM substitutes."""
 import ast
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 from pathlib import Path
@@ -21,7 +21,8 @@ def recoverable_writer(remote):
     writer = load_writer(remote)
     namespace = writer.upsert_table_cells.__globals__
     from apps.iam.models import Grant, Resource
-    namespace.update(Resource=Resource, Grant=Grant)
+    from apps.user.models import User
+    namespace.update(Resource=Resource, Grant=Grant, User=User)
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     helpers = {"RecoverableWriteUnknown", "_recoverable_scope", "_check_recoverable_receipt", "_finish_recoverable_write"}
     methods = {"submit_recoverable_write", "reconcile_committed_write"}
@@ -389,6 +390,96 @@ class RecoverableWriteTests(unittest.TestCase):
             self.submit()
         factory.assert_not_called()
         self.assertEqual((self.remote.calls, self.Audit.objects.filter(table=self.table).count()), (0, 0))
+
+    @contextmanager
+    def changed_authority_snapshot(self, kind, admin=None):
+        """External fixture state survives rollback; no claim of real ACL concurrency."""
+        state = {'changed': False}
+        admin = admin or self.user
+        original_admin_uid = admin.uid
+        resource_get, user_get = self.Resource.objects.get, self.User.objects.get
+        related = self.Table.objects.select_related
+        # Gate public-write checks must read a fresh relation after the RPC.
+        self.Gate.objects.filter(pk=self.gate.pk).update(public_access='public_write')
+        self.gate.public_access = 'public_write'
+        def current_resource(*args, **kwargs):
+            resource = resource_get(*args, **kwargs)
+            if state['changed'] and kind == 'tenant' and resource.type == 'table':
+                resource.tenant_id = -1
+            return resource
+        def current_user(*args, **kwargs):
+            user = user_get(*args, **kwargs)
+            target = admin if kind == 'admin_actor' else self.user
+            if state['changed'] and kind in {'actor', 'admin_actor'} and user.pk == target.pk:
+                user.uid = 'revoked-user-snapshot'
+            return user
+        def current_related(*args, **kwargs):
+            query = related(*args, **kwargs)
+            def get(*get_args, **get_kwargs):
+                table = query.get(*get_args, **get_kwargs)
+                if state['changed'] and kind == 'gate_policy':
+                    table.gate.public_access = 'internal'
+                return table
+            return SimpleNamespace(get=get)
+        def allowed(user, *args):
+            if kind == 'permission':
+                return not state['changed']
+            if kind == 'admin_actor':
+                return user.uid == original_admin_uid
+            if kind == 'gate_policy':
+                table = args[0] if len(args) == 1 else self.table
+                return table.gate.public_access == 'public_write'
+            return True
+        with ExitStack() as patches:
+            patches.enter_context(patch.object(self.Resource.objects, 'get', side_effect=current_resource))
+            patches.enter_context(patch.object(self.User.objects, 'get', side_effect=current_user))
+            patches.enter_context(patch.object(self.Table.objects, 'select_related', side_effect=current_related))
+            patches.enter_context(patch.object(self.writer, 'can_write_table', side_effect=allowed))
+            patches.enter_context(patch.object(self.writer, '_has_iam_permission', side_effect=allowed))
+            yield state
+
+    def test_execute_return_rechecks_scope_write_permission_and_fresh_gate_actor(self):
+        for kind in ('permission', 'tenant', 'gate_policy', 'actor'):
+            with self.subTest(kind=kind):
+                self.table = self.new_table()
+                execute = self.remote.execute_operation
+                with self.changed_authority_snapshot(kind) as policy:
+                    def commit_then_change(*args, **kwargs):
+                        result = execute(*args, **kwargs)
+                        policy['changed'] = True
+                        return result
+                    with patch.object(self.remote, 'execute_operation', side_effect=commit_then_change), self.assertRaises(self.Unknown) as caught:
+                        self.submit()
+                    self.assertTrue(policy['changed'])
+                    self.assertEqual((self.pending().count(), self.version()), (1, 0))
+                    operation_id = caught.exception.operation_id
+                    self.assertIn((self.gate.gid, operation_id), self.remote.receipts)
+                    self.assertEqual(self.remote.values[(self.gate.gid, self.table.tid, 0, 0)]['cts'], '100')
+                calls = self.remote.calls
+                self.assertEqual(self.reconcile(operation_id)['status'], 'committed')
+                self.assertEqual(self.remote.calls, calls)
+
+    def test_receipt_return_rechecks_scope_admin_permission_and_fresh_actor_snapshots(self):
+        admin = self.User.objects.create(uid=uuid4().hex, username='AdminFixture', created_at='1', updated_at='1')
+        for kind in ('permission', 'tenant', 'actor', 'admin_actor'):
+            with self.subTest(kind=kind):
+                self.table = self.new_table()
+                operation_id = self.lose_ack()
+                calls, reads = self.remote.calls, self.remote.reads
+                read = self.remote.read_operation_receipt
+                with self.changed_authority_snapshot(kind, admin) as policy:
+                    def prove_then_change(*args, **kwargs):
+                        result = read(*args, **kwargs)
+                        policy['changed'] = True
+                        return result
+                    with patch.object(self.remote, 'read_operation_receipt', side_effect=prove_then_change), self.assertRaises((PermissionError, self.Unknown)):
+                        self.writer.reconcile_committed_write(admin, self.table, operation_id)
+                    self.assertTrue(policy['changed'])
+                    self.assertEqual((self.pending().count(), self.version(), self.remote.calls, self.remote.reads),
+                                     (1, 0, calls, reads + 1))
+                    self.assertEqual(self.Audit.objects.filter(table=self.table).count(), 1)
+                self.assertEqual(self.reconcile(operation_id)['status'], 'committed')
+                self.assertEqual(self.remote.calls, calls)
 
 
 if __name__ == '__main__':
