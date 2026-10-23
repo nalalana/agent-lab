@@ -27,3 +27,5 @@
 复用真实PG schema/test_UUID immudb隔离库及清理入口，无SQLite unknown guard、无数据库替身回退；IAM/审核仍为允许夹具，未验证完整生产平台。最终候选还须通过既有10项安全场景、2项进程退出场景和相关离线回归。旧库不在运行时仅启动已有专用配置，不打印凭据；不可用则保留unavailable，先完成独立离线工作。
 
 权威对账/解除、完整平台联调和模型端到端复测为后续阶段，本轮不以局部安全场景代替这些验收。
+
+首次新判定器真实运行前补充两项独立并发验收：`raw_then_delete_lock_conflict`、`delete_then_raw_lock_conflict`。原有两项PG锁只覆盖cells/clear，不能证明旧入口实际等待同一行锁；补充项必须通过pg_stat_activity观察Lock等待，释放胜者后等待方以typed TABLE_WRITE_CONFLICT拒绝且零新增远端变更。与13主场景分列，不改变其case IDs或分数；同一补充判定器用于旧版与候选。
