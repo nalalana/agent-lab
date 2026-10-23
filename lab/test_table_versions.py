@@ -27,7 +27,9 @@ def project_adapter(service, table, conflict_type, user=None):
         "UnconfirmedWriteError": UnconfirmedWriteError, "ToolExecutionError": ToolExecutionError,
         "TableWriteConflict": conflict_type,
         "TableCellValidationError": getattr(getattr(service, "upsert_table_cells", None), "__globals__", {}).get(
-            "TableCellValidationError", type("TableCellValidationError", (ValueError,), {}))}
+            "TableCellValidationError", type("TableCellValidationError", (ValueError,), {})),
+        "TableWriteDurabilityError": getattr(getattr(service, "upsert_table_cells", None),
+            "__globals__", {}).get("TableWriteDurabilityError", ())}
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
     return namespace["execute_project_table_tool"]
 
